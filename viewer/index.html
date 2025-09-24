@@ -1,0 +1,155 @@
+<!doctype html>
+<html lang="de">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Mini GLB Viewer</title>
+  <style>
+    html,body{height:100%;margin:0;background:#0e1116;color:#e9ecf5;font:14px/1.45 system-ui,Segoe UI,Inter,Roboto,Arial,sans-serif}
+    .top{height:52px;display:flex;gap:10px;align-items:center;padding:0 12px;background:#111828;border-bottom:1px solid #24314a}
+    .wrap{height:calc(100vh - 52px)}
+    #stage{width:100%;height:100%}
+    .status{position:fixed;left:10px;top:60px;background:#0b1220cc;border:1px solid #24314a;padding:8px 10px;border-radius:10px;color:#9fb3d9}
+    .btn{background:#192339;border:1px solid #24314a;color:#e9ecf5;padding:8px 10px;border-radius:10px;cursor:pointer;font-weight:700}
+    .btn:hover{border-color:#60a5fa}
+    input[type="text"]{background:#0f1420;border:1px solid #24314a;color:#e9ecf5;padding:8px;border-radius:10px;width:40vw;min-width:280px}
+  </style>
+  <script type="importmap">
+  {
+    "imports": {
+      "three": "https://unpkg.com/three@0.160.0/build/three.module.js",
+      "three/addons/": "https://unpkg.com/three@0.160.0/examples/jsm/"
+    }
+  }
+  </script>
+</head>
+<body>
+  <div class="top">
+    <strong>Mini GLB Viewer</strong>
+    <form id="frm" style="display:flex;gap:8px;align-items:center">
+      <input id="modelUrl" type="text" placeholder="https://.../model.glb (oder ?model=... in URL)">
+      <button class="btn" type="submit">Laden</button>
+      <button id="btnFrame" class="btn" type="button">Fokus</button>
+    </form>
+  </div>
+  <div class="wrap"><div id="stage"></div></div>
+  <div class="status" id="status">Bereit</div>
+
+  <script type="module">
+    import * as THREE from 'three';
+    import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+    import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
+    import { DRACOLoader } from 'three/addons/loaders/DRACOLoader.js';
+
+    const status = document.getElementById('status');
+    const stage = document.getElementById('stage');
+    const renderer = new THREE.WebGLRenderer({antialias:true});
+    renderer.setPixelRatio(Math.min(window.devicePixelRatio||1, 2));
+    renderer.setSize(stage.clientWidth, stage.clientHeight, false);
+    renderer.outputColorSpace = THREE.SRGBColorSpace;
+    stage.appendChild(renderer.domElement);
+
+    const scene = new THREE.Scene();
+    scene.background = new THREE.Color('#0b1323');
+    const camera = new THREE.PerspectiveCamera(40, 1, 0.01, 5000);
+    camera.position.set(3,1.4,3);
+
+    const controls = new OrbitControls(camera, renderer.domElement);
+    controls.enableDamping = true;
+    controls.target.set(0,0.7,0);
+
+    const hemi = new THREE.HemisphereLight(0xffffff, 0x334466, 1.1);
+    const dir = new THREE.DirectionalLight(0xffffff, 2.0);
+    dir.position.set(2,5,2);
+    scene.add(hemi, dir);
+
+    const grid = new THREE.GridHelper(20, 20, 0x4b5d85, 0x2a3a5d);
+    grid.position.y = 0;
+    grid.material.transparent = true;
+    grid.material.opacity = 0.35;
+    scene.add(grid);
+
+    const loader = new GLTFLoader();
+    const draco = new DRACOLoader();
+    draco.setDecoderPath('https://www.gstatic.com/draco/v1/decoders/');
+    loader.setDRACOLoader(draco);
+
+    let root = null;
+
+    function fitCameraToObject(obj) {
+      const box = new THREE.Box3().setFromObject(obj);
+      const size = new THREE.Vector3();
+      const center = new THREE.Vector3();
+      box.getSize(size);
+      box.getCenter(center);
+      const maxDim = Math.max(size.x, size.y, size.z) || 1;
+      const fov = camera.fov * (Math.PI/180);
+      let dist = (maxDim/2) / Math.tan(fov/2);
+      dist *= 1.4;
+      const dirV = new THREE.Vector3(1,0.6,1).normalize();
+      camera.position.copy(center.clone().add(dirV.multiplyScalar(dist)));
+      controls.target.copy(center);
+      camera.updateProjectionMatrix();
+    }
+
+    async function loadModel(url) {
+      if (!url) { status.textContent = 'Kein Model-URL angegeben'; return; }
+      status.textContent = 'Lade…';
+      try {
+        const gltf = await loader.loadAsync(url);
+        if (root) { scene.remove(root); }
+        root = gltf.scene || gltf.scenes?.[0];
+        scene.add(root);
+        fitCameraToObject(root);
+        status.textContent = 'Fertig';
+      } catch (e) {
+        console.error(e);
+        status.textContent = 'Fehler beim Laden (CORS/URL prüfen)';
+      }
+    }
+
+    function onResize() {
+      const r = stage.getBoundingClientRect();
+      const w = Math.max(1, r.width), h = Math.max(1, r.height);
+      renderer.setSize(w, h, false);
+      camera.aspect = w/h;
+      camera.updateProjectionMatrix();
+    }
+    new ResizeObserver(onResize).observe(stage);
+    onResize();
+
+    function animate() {
+      requestAnimationFrame(animate);
+      controls.update();
+      renderer.render(scene, camera);
+    }
+    animate();
+
+    document.getElementById('btnFrame').addEventListener('click', ()=>{
+      if (root) fitCameraToObject(root);
+    });
+
+    const frm = document.getElementById('frm');
+    const modelUrl = document.getElementById('modelUrl');
+    frm.addEventListener('submit', (e)=>{
+      e.preventDefault();
+      const url = modelUrl.value.trim();
+      if (url) {
+        const u = new URL(window.location.href);
+        u.searchParams.set('model', url);
+        history.replaceState({}, '', u.toString());
+        loadModel(url);
+      }
+    });
+
+    const q = new URLSearchParams(window.location.search);
+    const initial = q.get('model');
+    if (initial) {
+      modelUrl.value = initial;
+      loadModel(initial);
+    } else {
+      status.textContent = 'Bereit (nutze ?model=… oder Feld oben)';
+    }
+  </script>
+</body>
+</html>
