@@ -3,92 +3,34 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width,initial-scale=1" />
-  <title>WebAR Mini Viewer</title>
+  <title>area-viewer</title>
   <style>
-    html,body{height:100%;margin:0;background:#0b1323;color:#e9ecf5}
-    #c{width:100%;height:100%;display:block}
-    .ui{position:fixed;left:12px;top:12px;background:#0b1220cc;border:1px solid #24314a;border-radius:10px;padding:8px 10px;font:14px system-ui}
-    input{width:420px;max-width:65vw}
+    body{margin:0;font:16px/1.5 system-ui,-apple-system,Segoe UI,Roboto}
+    .wrap{max-width:900px;margin:40px auto;padding:0 16px}
+    .bar{display:flex;gap:8px;align-items:center;flex-wrap:wrap}
+    input,button{font:inherit;padding:8px 12px}
+    .status{margin:12px 0;color:#555}
+    pre{background:#f6f7f9;padding:12px;border-radius:8px;overflow:auto}
   </style>
-  <script type="importmap">
-  { "imports": {
-      "three": "https://unpkg.com/three@0.160.0/build/three.module.js",
-      "three/addons/": "https://unpkg.com/three@0.160.0/examples/jsm/"
-  } }
+  <script>
+    // Optional globale Konfig (kann Cloudflare via <script> injizieren)
+    window.__CONFIG = window.__CONFIG || {};
+    // z.B. window.__CONFIG.SCENES_BASE = "https://cdn.jsdelivr.net/gh/<USER>/area-viewer@scenes/scenes";
   </script>
 </head>
 <body>
-<div class="ui">
-  <div>Modell-URL (gleicher Origin empfohlen):</div>
-  <input id="m" placeholder="/models/YourModel.glb">
-  <button id="btn">Laden</button>
-</div>
-<canvas id="c"></canvas>
+  <div class="wrap">
+    <h1>area-viewer</h1>
+    <div class="bar">
+      <label for="sceneId">Scene ID:</label>
+      <input id="sceneId" placeholder="demo-hello-world" />
+      <button id="loadBtn">Laden</button>
+      <button id="shareBtn">Link kopieren</button>
+    </div>
+    <div class="status" id="status">Bereit.</div>
+    <pre id="out" aria-live="polite"></pre>
+  </div>
 
-<script type="module">
-import * as THREE from 'three';
-import {OrbitControls} from 'three/addons/controls/OrbitControls.js';
-import {GLTFLoader} from 'three/addons/loaders/GLTFLoader.js';
-import {DRACOLoader} from 'three/addons/loaders/DRACOLoader.js';
-
-const canvas = document.getElementById('c');
-const renderer = new THREE.WebGLRenderer({canvas, antialias:true});
-renderer.setPixelRatio(Math.min(devicePixelRatio,2));
-renderer.setSize(innerWidth, innerHeight, false);
-renderer.outputColorSpace = THREE.SRGBColorSpace;
-renderer.toneMapping = THREE.ACESFilmicToneMapping;
-
-const scene = new THREE.Scene();
-scene.background = new THREE.Color('#0b1323');
-const camera = new THREE.PerspectiveCamera(35, innerWidth/innerHeight, 0.01, 2000);
-camera.position.set(2.5,1.2,2.5);
-
-const controls = new OrbitControls(camera, renderer.domElement);
-controls.target.set(0,0.6,0); controls.update();
-
-const hemi = new THREE.HemisphereLight(0xffffff, 0x334466, 1.1); scene.add(hemi);
-const dir  = new THREE.DirectionalLight(0xffffff, 2.2); dir.position.set(3,5,2); scene.add(dir);
-
-const grid = new THREE.GridHelper(10, 20, 0x335, 0x224); grid.position.y = 0; scene.add(grid);
-
-const loader = new GLTFLoader();
-const draco  = new DRACOLoader(); draco.setDecoderPath('https://www.gstatic.com/draco/v1/decoders/'); loader.setDRACOLoader(draco);
-
-let current=null;
-async function loadModel(url){
-  if(current){ scene.remove(current); current.traverse(o=>{o.geometry?.dispose?.(); if(o.material){(Array.isArray(o.material)?o.material:[o.material]).forEach(m=>m?.dispose?.())}}); current=null; }
-  const gltf = await loader.loadAsync(url);
-  current = gltf.scene;
-  scene.add(current);
-
-  // zentrieren & skalieren
-  const box = new THREE.Box3().setFromObject(current);
-  const size = new THREE.Vector3(); box.getSize(size);
-  const center = new THREE.Vector3(); box.getCenter(center);
-  current.position.sub(center); // auf 0,0,0 zentrieren
-  const maxDim = Math.max(size.x,size.y,size.z)||1;
-  const scale = 1.2 / maxDim; current.scale.setScalar(scale);
-}
-
-function tick(time){
-  requestAnimationFrame(tick);
-  controls.update(); renderer.render(scene, camera);
-}
-tick();
-
-addEventListener('resize', ()=>{
-  renderer.setSize(innerWidth, innerHeight, false);
-  camera.aspect = innerWidth/innerHeight; camera.updateProjectionMatrix();
-});
-
-// URL-Param ?model=...
-const params = new URLSearchParams(location.search);
-const initial = params.get('model') || '/models/YourModel.glb';
-document.getElementById('m').value = initial;
-
-document.getElementById('btn').onclick = ()=> loadModel(document.getElementById('m').value);
-if(initial) loadModel(initial).catch(err=>alert('Fehler beim Laden: '+err));
-</script>
+  <script type="module" src="./main.js"></script>
 </body>
 </html>
-
