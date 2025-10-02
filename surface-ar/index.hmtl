@@ -1,0 +1,107 @@
+<!doctype html>
+<html lang="de">
+<head>
+  <meta charset="utf-8"/>
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover"/>
+  <title>Surface AR – Native (Full-Bleed, Animation)</title>
+  <script type="module" src="https://unpkg.com/@google/model-viewer/dist/model-viewer.min.js"></script>
+  <style>
+    :root{color-scheme:dark light}
+    *,*::before,*::after{box-sizing:border-box}
+    html,body{margin:0;height:100%;background:#000;font-family:system-ui,-apple-system,Segoe UI,Roboto,Helvetica,Arial}
+    model-viewer{
+      position:fixed; inset:0; width:100vw; height:100svh; display:block; background:#000; border:0; border-radius:0; overflow:hidden;
+      --poster-color:transparent;
+    }
+    button[slot="ar-button"]{
+      position:absolute; left:max(12px,env(safe-area-inset-left)); top:max(12px,env(safe-area-inset-top));
+      padding:.75rem 1rem; border-radius:12px; border:1px solid rgba(255,255,255,.25); background:#111; color:#fff
+    }
+    #err{position:fixed;left:12px;top:12px;z-index:9;background:#b00020;color:#fff;padding:8px 10px;border-radius:8px;display:none;font:12px/1.35 monospace;max-width:min(92vw,680px);white-space:pre-wrap}
+  </style>
+</head>
+<body>
+  <div id="err"></div>
+  <model-viewer id="mv"
+    src="https://modelviewer.dev/shared-assets/models/Astronaut.glb"
+    ar ar-modes="scene-viewer quick-look webxr"
+    camera-controls autoplay
+    environment-image="https://modelviewer.dev/shared-assets/environments/neutral.hdr"
+    exposure="1" shadow-intensity="1"
+    interaction-prompt="none"
+    camera-orbit="0deg 70deg auto"
+    camera-target="auto"
+    field-of-view="30deg"
+    poster="">
+    <button slot="ar-button">In AR öffnen</button>
+  </model-viewer>
+
+<script>
+  // --- NEU: ID & Worker-Basis aus Query
+  const qs = new URLSearchParams(location.search);
+  const sceneId    = qs.get('scene');
+  const workerBase = (qs.get('base') || '').replace(/\/$/, '');
+  const HAS_WORKER = !!(sceneId && workerBase);
+
+  // Ableitungen (funktionieren auch, wenn kein Worker angegeben ist)
+  const SCENE_JSON = HAS_WORKER ? `${workerBase}/scenes/${encodeURIComponent(sceneId)}/scene.json` : (qs.get('scene') || null);
+  const SCENE_GLB  = HAS_WORKER ? `${workerBase}/scenes/${encodeURIComponent(sceneId)}/scene.glb`  : null;
+
+  const showErr = m => { const el = document.getElementById('err'); el.textContent = m; el.style.display='block'; };
+
+  // Default-Konfig (fallback)
+  let cfg = { model:{ url:"https://modelviewer.dev/shared-assets/models/Astronaut.glb", usdzUrl:null, animation:"*" },
+              target:{ previewUrl:null } };
+
+  (async ()=>{
+    const mv = document.getElementById('mv');
+
+    // 1) Worker? → direkt GLB benutzen (schnellster Weg)
+    if (SCENE_GLB) {
+      mv.src = SCENE_GLB;
+    }
+    // 2) Optional: eine scene.json laden (alter Stil: scene ist komplette URL)
+    else if (SCENE_JSON) {
+      try{
+        const r = await fetch(SCENE_JSON, {cache:'no-cache'});
+        if(!r.ok) throw new Error(r.status+' '+r.statusText);
+        const j = await r.json();
+        if (j.model)  cfg.model  = Object.assign(cfg.model,  j.model);
+        if (j.target) cfg.target = Object.assign(cfg.target, j.target);
+        mv.src = cfg.model.url || mv.src;
+      }catch(e){ showErr('scene.json konnte nicht geladen werden: '+e.message); }
+    }
+
+    // iOS QuickLook (falls später vorhanden)
+    if (cfg.model.usdzUrl) mv.setAttribute('ios-src', cfg.model.usdzUrl); else mv.removeAttribute('ios-src');
+    if (cfg.target?.previewUrl) mv.setAttribute('poster', cfg.target.previewUrl);
+
+    mv.addEventListener('load', ()=>{
+      mv.cameraOrbit = '0deg 70deg auto';
+      mv.cameraTarget = 'auto';
+      mv.fieldOfView  = '30deg';
+      mv.jumpCameraToGoal();
+
+      // Animation wählen
+      const names = mv.availableAnimations || [];
+      const sel = cfg.model.animation;
+      if (sel === 'none'){ mv.autoplay=false; mv.animationName=null; return; }
+      if (sel === '*' || sel==null){
+        if (names.length){ mv.animationName = names[0]; mv.autoplay=true; }
+        return;
+      }
+      if (typeof sel === 'string'){
+        if (names.includes(sel)){ mv.animationName = sel; mv.autoplay=true; }
+        else if (names.length){ mv.animationName = names[0]; mv.autoplay=true; }
+        return;
+      }
+      const idx = Math.max(0, Math.min(names.length-1, parseInt(sel||0,10)));
+      if (names[idx]){ mv.animationName = names[idx]; mv.autoplay=true; }
+    });
+  })();
+</script>
+
+  })();
+</script>
+</body>
+</html>
