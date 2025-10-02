@@ -26,17 +26,43 @@ let camera, scene, renderer, reticle, controller, hitTestSource=null, hitTestSou
 let model=null, mixer=null, clips=[];
 const clock = new THREE.Clock();
 
+/* ========= NEU: Param-Normalisierung wie im Native-Viewer ========= */
 const qs = new URLSearchParams(location.search);
-const sceneId    = qs.get('scene');
-const workerBase = (qs.get('base') || '').replace(/\/$/, '');
-const HAS_WORKER = !!(sceneId && workerBase);
 
-const SCENE_GLB = HAS_WORKER ? `${workerBase}/scenes/${encodeURIComponent(sceneId)}/scene.glb` : null;
-// Alte Variante: ?scene=<vollständige JSON-URL>
-const sceneUrl = (!HAS_WORKER ? qs.get('scene') : null);
+// akzeptiere ?scene=… (bevorzugt) oder Fallback ?src=…
+let sceneParam = (qs.get('scene') || qs.get('src') || '').trim();
+
+// optional: Worker-Base, sonst Default
+const workerBase = (qs.get('base') || 'https://area-publish.area-webar.workers.dev').replace(/\/$/, '');
+// optional: direkter GLB-Override
+const overrideGlb = (qs.get('glb') || '').trim();
+
+const isHttp = u => /^https?:\/\//i.test(u);
+const isDataOrBlob = u => u.startsWith('data:') || u.startsWith('blob:');
+const endsWithAny = (u, exts) => exts.some(ext => u.toLowerCase().endsWith(ext));
+
+let SCENE_GLB = '';
+let SCENE_JSON = '';
+
+if (overrideGlb) {
+  SCENE_GLB = overrideGlb;
+} else if (sceneParam) {
+  if (isDataOrBlob(sceneParam)) {
+    SCENE_JSON = sceneParam;                    // Data-URL mit JSON
+  } else if (isHttp(sceneParam)) {
+    if (endsWithAny(sceneParam, ['.glb','.gltf'])) SCENE_GLB = sceneParam; // direkte GLB-URL
+    else SCENE_JSON = sceneParam;               // vollständige scene.json-URL
+  } else {
+    // nur eine ID → Worker-Pfade bauen
+    const id = sceneParam.replace(/\/+$/,'');
+    SCENE_GLB  = `${workerBase}/scenes/${encodeURIComponent(id)}/scene.glb`;
+    SCENE_JSON = `${workerBase}/scenes/${encodeURIComponent(id)}/scene.json`;
+  }
+}
+/* ========= Ende Normalisierung ========= */
 
 const cfg = {
-  modelUrl: 'https://modelviewer.dev/shared-assets/models/Astronaut.glb',
+  modelUrl: SCENE_GLB || 'https://modelviewer.dev/shared-assets/models/Astronaut.glb',
   position: [0,0,0],        // wird bei Reticle-Tap überschrieben
   rotation: [0,0,0],        // Grad!
   scale:[0.6,0.6,0.6],
@@ -48,24 +74,25 @@ const rad2deg = r => (r||0) * 180/Math.PI;
 const deg2rad = d => (d||0) * Math.PI/180;
 
 // ---------- Szene aus externer JSON (optional) ----------
-
 async function loadScene(){
-  if (SCENE_GLB) {            // neuer, einfacher Weg
-    cfg.modelUrl = SCENE_GLB;
-    return;
-  }
-  if (!sceneUrl) return;       // kein JSON angegeben
-  const r = await fetch(sceneUrl, {cache:'no-cache'});
+  // Wenn wir bereits eine GLB-URL haben → fertig
+  if (SCENE_GLB) { cfg.modelUrl = SCENE_GLB; return; }
+  // Falls scene.json vorhanden: laden und übernehmen
+  if (!SCENE_JSON) return;
+  const r = await fetch(SCENE_JSON, {cache:'no-cache'});
   if(!r.ok) throw new Error('scene.json Load '+r.status);
   const j = await r.json();
-  if (j?.model?.url) cfg.modelUrl = j.model.url;
+
+  if (j?.model?.url)         cfg.modelUrl = j.model.url;
   if (Array.isArray(j?.model?.position)) cfg.position = j.model.position;
-  if (Array.isArray(j?.model?.rotation)) cfg.rotation = j.model.rotation;
+  // akzeptiere sowohl rotationDeg (deg) als auch rotation (deg)
+  if (Array.isArray(j?.model?.rotationDeg)) cfg.rotation = j.model.rotationDeg;
+  else if (Array.isArray(j?.model?.rotation)) cfg.rotation = j.model.rotation;
   if (Array.isArray(j?.model?.scale))    cfg.scale    = j.model.scale;
   if (j?.model?.animation!=null)         cfg.animation= j.model.animation;
 }
 
-// -------- Fallback aus Query (Bugfix px!)
+// -------- Fallbacks aus Query (inkl. Bugfix px) --------
 function applyQueryFallback(){
   const glb = qs.get('glb');
   if (glb) cfg.modelUrl = glb;
@@ -83,6 +110,7 @@ function applyQueryFallback(){
   const sx = parseFloat(qs.get('sx')), sy = parseFloat(qs.get('sy')), sz = parseFloat(qs.get('sz'));
   if ([sx,sy,sz].some(v=>!isNaN(v))) cfg.scale = [sx||1, sy||1, sz||1];
 }
+
 // ---------- THREE Init ----------
 function init() {
   scene = new THREE.Scene();
@@ -137,7 +165,6 @@ function playClips(){
 function onSelect() {
   if (!reticle.visible) return;
 
-  // Immer aktuelles cfg verwenden (kann per postMessage überschrieben worden sein)
   const loader = new GLTFLoader();
   loader.setCrossOrigin('anonymous');
 
@@ -203,7 +230,6 @@ function applyTransformFromMsg(t){
   cfg.scale    = [t.sx ?? 1, t.sy ?? 1, t.sz ?? 1];
   cfg.rotation = [rad2deg(t.rx), rad2deg(t.ry), rad2deg(t.rz)];
   cfg.position = [t.px ?? 0, t.py ?? 0, t.pz ?? 0]; // bei Reticle-Tap nicht verwendet
-  // Falls Modell schon steht, sofort anwenden:
   if (model){
     const [sx,sy,sz]=cfg.scale; model.scale.set(sx,sy,sz);
     const [rx,ry,rz]=cfg.rotation; model.rotation.set(deg2rad(rx), deg2rad(ry), deg2rad(rz));
@@ -211,18 +237,15 @@ function applyTransformFromMsg(t){
 }
 
 window.addEventListener('message', async (e)=>{
-  // Sicherheit: nur gleicher Origin (https://krischihh.github.io)
   if (e.origin !== location.origin) return;
   const msg = e.data || {};
   if (msg.type !== 'webar-load') return;
 
   try{
-    // GLB aus ArrayBuffer in Blob-URL wandeln
     const blob = new Blob([msg.glbBuffer], { type:'model/gltf-binary' });
     const url  = URL.createObjectURL(blob);
     cfg.modelUrl = url;
     applyTransformFromMsg(msg.transform || {});
-    // URL später wieder freigeben (genug Zeit für Loader)
     setTimeout(()=> URL.revokeObjectURL(url), 60000);
     console.log('[viewer] Modell per postMessage registriert – tippe zum Platzieren.');
   }catch(err){
