@@ -17,6 +17,30 @@
     window.__CONFIG = window.__CONFIG || {};
     // z.B. window.__CONFIG.SCENES_BASE = "https://cdn.jsdelivr.net/gh/<USER>/area-viewer@scenes/scenes";
   </script>
+
+<script>
+  const WORKER_BASE = "https://area-webar.workers.dev"; // dein Worker
+  const params = new URL(location).searchParams;
+  const sceneId = params.get('scene') || 'demo-hello-world';
+
+  async function loadScene() {
+    // 1) Szene-JSON vom Worker
+    const sceneJsonUrl = `${WORKER_BASE}/scenes/${encodeURIComponent(sceneId)}/scene.json`;
+    const scene = await fetch(sceneJsonUrl).then(r => {
+      if (!r.ok) throw new Error('scene.json not found');
+      return r.json();
+    });
+
+    // 2) GLB-URL aus demselben Ordner beim Worker
+    const glbUrl = `${WORKER_BASE}/scenes/${encodeURIComponent(sceneId)}/scene.glb`;
+
+    // TODO: hier deinen bestehenden GLTFLoader / Drei.js Code aufrufen
+    // loader.load(glbUrl, (gltf) => { ... render ... });
+  }
+  window.addEventListener('DOMContentLoaded', loadScene);
+</script>
+
+  
 </head>
 <body>
   <div class="wrap">
