@@ -8,6 +8,7 @@
   html,body{margin:0;height:100%;overflow:hidden;background:#000;color:#fff;font-family:system-ui}
   #enter{position:fixed;left:50%;top:50%;transform:translate(-50%,-50%);padding:12px 18px;border-radius:12px;border:1px solid #555;background:#111;color:#fff}
   #msg{position:fixed;left:12px;bottom:12px;opacity:.9}
+  #err{position:fixed;left:12px;top:12px;z-index:9;background:#b00020;color:#fff;padding:8px 10px;border-radius:8px;display:none;font:12px/1.35 monospace;max-width:min(92vw,680px);white-space:pre-wrap}
 </style>
 <script type="importmap">
 {
@@ -26,6 +27,8 @@ let camera, scene, renderer, reticle, controller, hitTestSource=null, hitTestSou
 let model=null, mixer=null, clips=[];
 const clock = new THREE.Clock();
 
+const showErr = (m)=>{ const el=document.getElementById('err'); el.textContent=m; el.style.display='block'; };
+
 /* ========= NEU: Param-Normalisierung wie im Native-Viewer ========= */
 const qs = new URLSearchParams(location.search);
 
@@ -38,8 +41,8 @@ const workerBase = (qs.get('base') || 'https://area-publish.area-webar.workers.d
 const overrideGlb = (qs.get('glb') || '').trim();
 
 const isHttp = u => /^https?:\/\//i.test(u);
-const isDataOrBlob = u => u.startsWith('data:') || u.startsWith('blob:');
-const endsWithAny = (u, exts) => exts.some(ext => u.toLowerCase().endsWith(ext));
+const isDataOrBlob = u => /^data:|^blob:/i.test(u);
+const isGlbLike = u => /\.(?:glb|gltf)(?:[?#]|$)/i.test(u);
 
 let SCENE_GLB = '';
 let SCENE_JSON = '';
@@ -50,7 +53,7 @@ if (overrideGlb) {
   if (isDataOrBlob(sceneParam)) {
     SCENE_JSON = sceneParam;                    // Data-URL mit JSON
   } else if (isHttp(sceneParam)) {
-    if (endsWithAny(sceneParam, ['.glb','.gltf'])) SCENE_GLB = sceneParam; // direkte GLB-URL
+    if (isGlbLike(sceneParam)) SCENE_GLB = sceneParam; // direkte GLB-URL
     else SCENE_JSON = sceneParam;               // vollständige scene.json-URL
   } else {
     // nur eine ID → Worker-Pfade bauen
@@ -79,17 +82,31 @@ async function loadScene(){
   if (SCENE_GLB) { cfg.modelUrl = SCENE_GLB; return; }
   // Falls scene.json vorhanden: laden und übernehmen
   if (!SCENE_JSON) return;
-  const r = await fetch(SCENE_JSON, {cache:'no-cache'});
-  if(!r.ok) throw new Error('scene.json Load '+r.status);
-  const j = await r.json();
 
-  if (j?.model?.url)         cfg.modelUrl = j.model.url;
-  if (Array.isArray(j?.model?.position)) cfg.position = j.model.position;
-  // akzeptiere sowohl rotationDeg (deg) als auch rotation (deg)
-  if (Array.isArray(j?.model?.rotationDeg)) cfg.rotation = j.model.rotationDeg;
-  else if (Array.isArray(j?.model?.rotation)) cfg.rotation = j.model.rotation;
-  if (Array.isArray(j?.model?.scale))    cfg.scale    = j.model.scale;
-  if (j?.model?.animation!=null)         cfg.animation= j.model.animation;
+  try{
+    const r = await fetch(SCENE_JSON, {cache:'no-cache', mode:'cors'});
+    if(!r.ok) throw new Error('scene.json Load '+r.status+' '+r.statusText);
+    const j = await r.json();
+
+    // resolve relative model.url gegen die JSON-URL
+    const resolveAgainstJson = (u)=>{
+      if (!u) return u;
+      if (isHttp(u) || isDataOrBlob(u)) return u;
+      // SCENE_JSON kann data: sein → dann relative URLs meiden
+      try { return new URL(u, SCENE_JSON).href; } catch { return u; }
+    };
+
+    if (j?.model?.url)         cfg.modelUrl = resolveAgainstJson(j.model.url);
+    if (Array.isArray(j?.model?.position)) cfg.position = j.model.position;
+    // akzeptiere sowohl rotationDeg (deg) als auch rotation (deg)
+    if (Array.isArray(j?.model?.rotationDeg)) cfg.rotation = j.model.rotationDeg;
+    else if (Array.isArray(j?.model?.rotation)) cfg.rotation = j.model.rotation;
+    if (Array.isArray(j?.model?.scale))    cfg.scale    = j.model.scale;
+    if (j?.model?.animation!=null)         cfg.animation= j.model.animation;
+  }catch(e){
+    console.warn(e);
+    showErr('scene.json konnte nicht geladen werden:\n'+e.message);
+  }
 }
 
 // -------- Fallbacks aus Query (inkl. Bugfix px) --------
@@ -166,7 +183,7 @@ function onSelect() {
   if (!reticle.visible) return;
 
   const loader = new GLTFLoader();
-  loader.setCrossOrigin('anonymous');
+  loader.setCrossOrigin('anonymous'); // wichtig für CORS
 
   if (!model) {
     loader.load(cfg.modelUrl, (gltf) => {
@@ -177,7 +194,10 @@ function onSelect() {
       scene.add(model);
       clips = gltf.animations||[];
       if (clips.length){ mixer = new THREE.AnimationMixer(model); playClips(); }
-    }, undefined, (err)=>{ console.error('GLB load failed', err); });
+    }, undefined, (err)=>{
+      console.error('GLB load failed', err);
+      showErr('Fehler beim Laden des Objekts:\n'+(err?.message||err||'Unbekannt'));
+    });
   } else {
     model.position.setFromMatrixPosition(reticle.matrix);
   }
@@ -185,9 +205,9 @@ function onSelect() {
 
 // ---------- WebXR ----------
 async function startAR(){
-  if (!navigator.xr) return alert('WebXR nicht verfügbar.');
+  if (!navigator.xr) { showErr('WebXR nicht verfügbar.'); return; }
   const isARSupported = await navigator.xr.isSessionSupported('immersive-ar');
-  if (!isARSupported) return alert('Dein Gerät/Browser unterstützt kein WebXR-AR.');
+  if (!isARSupported) { showErr('Dein Gerät/Browser unterstützt kein WebXR-AR.'); return; }
   const session = await navigator.xr.requestSession('immersive-ar', { requiredFeatures: ['hit-test','local-floor'] });
   renderer.xr.setReferenceSpaceType('local-floor');
   await renderer.xr.setSession(session);
@@ -250,6 +270,7 @@ window.addEventListener('message', async (e)=>{
     console.log('[viewer] Modell per postMessage registriert – tippe zum Platzieren.');
   }catch(err){
     console.error('[viewer] Laden via postMessage fehlgeschlagen', err);
+    showErr('postMessage-Import fehlgeschlagen:\n'+(err?.message||err||'Unbekannt'));
   }
 });
 
@@ -262,6 +283,7 @@ window.addEventListener('message', async (e)=>{
 </script>
 </head>
 <body>
+  <div id="err"></div>
   <button id="enter">Start AR</button>
   <div id="msg">Android Chrome empfohlen · Tippe auf den Boden, um das Modell zu platzieren</div>
 </body>
