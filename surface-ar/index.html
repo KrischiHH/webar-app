@@ -4,18 +4,12 @@
   <meta charset="utf-8"/>
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover"/>
   <title>Surface AR – Native (Full-Bleed, Animation)</title>
-
-  <!-- model-viewer -->
   <script type="module" src="https://unpkg.com/@google/model-viewer/dist/model-viewer.min.js"></script>
-
   <style>
     :root{color-scheme:dark light}
     *,*::before,*::after{box-sizing:border-box}
     html,body{margin:0;height:100%;background:#000;font-family:system-ui,-apple-system,Segoe UI,Roboto,Helvetica,Arial}
-    model-viewer{
-      position:fixed; inset:0; width:100vw; height:100svh; display:block; background:#000; border:0; border-radius:0; overflow:hidden;
-      --poster-color:transparent;
-    }
+    model-viewer{position:fixed; inset:0; width:100vw; height:100svh; display:block; background:#000}
     button[slot="ar-button"]{
       position:absolute; left:max(12px,env(safe-area-inset-left)); top:max(12px,env(safe-area-inset-top));
       padding:.75rem 1rem; border-radius:12px; border:1px solid rgba(255,255,255,.25); background:#111; color:#fff
@@ -40,120 +34,94 @@
     <button slot="ar-button">In AR öffnen</button>
   </model-viewer>
 
-  <script>
-    // ---------- Param-Normalisierung ----------
-    const qs = new URLSearchParams(location.search);
+<script>
+  const qs = new URLSearchParams(location.search);
+  let scene = (qs.get('scene') || qs.get('src') || '').trim();
+  const workerBase = (qs.get('base') || 'https://area-publish.area-webar.workers.dev').replace(/\/$/, '');
+  const overrideGlb  = (qs.get('glb')  || '').trim();
+  const overrideUsdz = (qs.get('usdz') || '').trim();
 
-    // akzeptiere ?scene=… (bevorzugt) oder Fallback ?src=…
-    let scene = (qs.get('scene') || qs.get('src') || '').trim();
+  const isHttp = (u)=> /^https?:\/\//i.test(u);
+  const isDataOrBlob = (u)=> u.startsWith('data:') || u.startsWith('blob:');
+  const endsWithAny = (u,exts)=> exts.some(ext=> u.toLowerCase().endsWith(ext));
 
-    // optional: Worker-Base per Query überschreiben, sonst Default
-    const workerBase = (qs.get('base') || 'https://area-publish.area-webar.workers.dev').replace(/\/$/, '');
+  let SCENE_GLB = '';
+  let SCENE_JSON = '';
 
-    // direkte Overrides möglich
-    const overrideGlb  = (qs.get('glb')  || '').trim();
-    const overrideUsdz = (qs.get('usdz') || '').trim();
-
-    // Hilfsfunktionen
-    const isHttp = (u)=> /^https?:\/\//i.test(u);
-    const isDataOrBlob = (u)=> u.startsWith('data:') || u.startsWith('blob:');
-    const endsWithAny = (u,exts)=> exts.some(ext=> u.toLowerCase().endsWith(ext));
-
-    // Ergebnis-URLs (werden unten gesetzt)
-    let SCENE_GLB = '';
-    let SCENE_JSON = '';
-
-    if (overrideGlb) {
-      // explizit vorgegeben -> direkt verwenden
-      SCENE_GLB = overrideGlb;
-    } else if (scene) {
-      if (isDataOrBlob(scene)) {
-        // Preview-Daten (Data-/Blob-URL) enthalten eine JSON-Szene
-        SCENE_JSON = scene;
-      } else if (isHttp(scene)) {
-        // vollständige URL: erkennen ob GLB oder JSON
-        if (endsWithAny(scene, ['.glb','.gltf'])) SCENE_GLB = scene;
-        else SCENE_JSON = scene; // z.B. …/scene.json
-      } else {
-        // nur eine ID → Worker-Pfade bauen
-        const id = scene.replace(/\/+$/,'');
-        SCENE_GLB  = `${workerBase}/scenes/${encodeURIComponent(id)}/scene.glb`;
-        SCENE_JSON = `${workerBase}/scenes/${encodeURIComponent(id)}/scene.json`;
-      }
+  if (overrideGlb) {
+    SCENE_GLB = overrideGlb;
+  } else if (scene) {
+    if (isDataOrBlob(scene)) {
+      SCENE_JSON = scene;
+    } else if (isHttp(scene)) {
+      if (endsWithAny(scene, ['.glb','.gltf'])) SCENE_GLB = scene;
+      else SCENE_JSON = scene;
+    } else {
+      const id = scene.replace(/\/+$/,'');
+      SCENE_GLB  = `${workerBase}/scenes/${encodeURIComponent(id)}/scene.glb`;
+      SCENE_JSON = `${workerBase}/scenes/${encodeURIComponent(id)}/scene.json`;
     }
+  }
 
-    const showErr = (m)=>{
-      const el = document.getElementById('err');
-      el.textContent = m;
-      el.style.display = 'block';
-    };
+  const showErr = (m)=>{ const el=document.getElementById('err'); el.textContent=m; el.style.display='block'; };
 
-    // ---------- Laden / Konfigurieren ----------
-    const mv = document.getElementById('mv');
+  const mv = document.getElementById('mv');
+  let cfg = { model:{ url: SCENE_GLB || "https://modelviewer.dev/shared-assets/models/Astronaut.glb", usdzUrl:null, animation:"*" },
+              target:{ previewUrl:null } };
 
-    // Basis-Konfig
-    let cfg = {
-      model:  { url: SCENE_GLB || "https://modelviewer.dev/shared-assets/models/Astronaut.glb", usdzUrl: null, animation:"*" },
-      target: { previewUrl: null }
-    };
+  (async () => {
+    try {
+      // 1) Wenn GLB ermittelt → direkt setzen (mit .glb-Hint)
+      if (SCENE_GLB) {
+        mv.src = SCENE_GLB + '#.glb';
+      }
 
-    (async () => {
-      try {
-        // 1) Wenn GLB ermittelt wurde → direkt zuweisen (schnellster Weg)
-        if (SCENE_GLB) {
-          mv.src = SCENE_GLB ? (SCENE_GLB + '#.glb') : mv.src;
+      // 2) Optional JSON laden
+      if (SCENE_JSON) {
+        const r = await fetch(SCENE_JSON, { cache: 'no-cache' });
+        if (!r.ok) throw new Error(r.status + ' ' + r.statusText);
+        const j = await r.json();
+        if (j.model)  cfg.model  = Object.assign(cfg.model,  j.model);
+        if (j.target) cfg.target = Object.assign(cfg.target, j.target);
+
+        if (!SCENE_GLB && cfg.model.url) {
+          mv.src = cfg.model.url + '#.glb';
         }
-
-        // 2) Falls eine Szene-JSON vorhanden ist (Data-URL oder http-URL) → laden und Werte übernehmen
-        if (SCENE_JSON) {
-          const r = await fetch(SCENE_JSON, { cache: 'no-cache' });
-          if (!r.ok) throw new Error(r.status + ' ' + r.statusText);
-
-          const j = await r.json();
-          if (j.model)  cfg.model  = Object.assign(cfg.model,  j.model);
-          if (j.target) cfg.target = Object.assign(cfg.target, j.target);
-
-          // Wenn GLB noch nicht gesetzt war, übernehme aus JSON
-          if (!SCENE_GLB && cfg.model.url) {
-  mv.src = cfg.model.url + '#.glb';
-}
-          }
-        }
-
-        // 3) USDZ & Poster ggf. setzen / überschreiben
-        if (overrideUsdz) cfg.model.usdzUrl = overrideUsdz;
-        if (cfg.model.usdzUrl) mv.setAttribute('ios-src', cfg.model.usdzUrl); else mv.removeAttribute('ios-src');
-        if (cfg.target?.previewUrl) mv.setAttribute('poster', cfg.target.previewUrl);
-
-      } catch (e) {
-        showErr('scene.json konnte nicht geladen werden: ' + e.message);
-        console.error(e);
       }
-    })();
 
-    // 4) Nach dem Laden Kamera & Animation konfigurieren
-    mv.addEventListener('load', ()=>{
-      mv.cameraOrbit = '0deg 70deg auto';
-      mv.cameraTarget = 'auto';
-      mv.fieldOfView  = '30deg';
-      mv.jumpCameraToGoal();
+      // 3) USDZ/Poster
+      const usdz = overrideUsdz || cfg.model.usdzUrl;
+      if (usdz) mv.setAttribute('ios-src', usdz); else mv.removeAttribute('ios-src');
+      if (cfg.target?.previewUrl) mv.setAttribute('poster', cfg.target.previewUrl);
 
-      const names = mv.availableAnimations || [];
-      const sel = cfg.model.animation;
+    } catch (e) {
+      showErr('scene.json konnte nicht geladen werden: ' + e.message);
+      console.error(e);
+    }
+  })();
 
-      if (sel === 'none'){ mv.autoplay=false; mv.animationName=null; return; }
-      if (sel === '*' || sel==null){
-        if (names.length){ mv.animationName = names[0]; mv.autoplay=true; }
-        return;
-      }
-      if (typeof sel === 'string'){
-        if (names.includes(sel)){ mv.animationName = sel; mv.autoplay=true; }
-        else if (names.length){ mv.animationName = names[0]; mv.autoplay=true; }
-        return;
-      }
-      const idx = Math.max(0, Math.min(names.length-1, parseInt(sel||0,10)));
-      if (names[idx]){ mv.animationName = names[idx]; mv.autoplay=true; }
-    });
-  </script>
+  mv.addEventListener('load', ()=>{
+    mv.cameraOrbit = '0deg 70deg auto';
+    mv.cameraTarget = 'auto';
+    mv.fieldOfView  = '30deg';
+    mv.jumpCameraToGoal();
+
+    const names = mv.availableAnimations || [];
+    const sel = cfg.model.animation;
+
+    if (sel === 'none'){ mv.autoplay=false; mv.animationName=null; return; }
+    if (sel === '*' || sel==null){
+      if (names.length){ mv.animationName = names[0]; mv.autoplay=true; }
+      return;
+    }
+    if (typeof sel === 'string'){
+      if (names.includes(sel)){ mv.animationName = sel; mv.autoplay=true; }
+      else if (names.length){ mv.animationName = names[0]; mv.autoplay=true; }
+      return;
+    }
+    const idx = Math.max(0, Math.min(names.length-1, parseInt(sel||0,10)));
+    if (names[idx]){ mv.animationName = names[idx]; mv.autoplay=true; }
+  });
+</script>
 </body>
 </html>
