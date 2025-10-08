@@ -116,17 +116,7 @@ function applyQueryFallback(){
   if ([sx,sy,sz].some(v=>!isNaN(v))) cfg.scale = [sx||1, sy||1, sz||1];
 }
 
-async function preflight() {
-  try {
-    const r = await fetch(cfg.modelUrl, { method:'HEAD', mode:'cors' });
-    // Worker vor Patch antwortete 404 auf HEAD – das ist jetzt egal.
-  } catch {}
-}
-
-
-
-
-  
+ 
 // ---------- THREE Init ----------
 function init() {
   scene = new THREE.Scene();
