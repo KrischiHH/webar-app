@@ -101,7 +101,7 @@
       try {
         // 1) Wenn GLB ermittelt wurde → direkt zuweisen (schnellster Weg)
         if (SCENE_GLB) {
-          mv.src = SCENE_GLB;
+          mv.src = SCENE_GLB ? (SCENE_GLB + '#.glb') : mv.src;
         }
 
         // 2) Falls eine Szene-JSON vorhanden ist (Data-URL oder http-URL) → laden und Werte übernehmen
@@ -115,7 +115,8 @@
 
           // Wenn GLB noch nicht gesetzt war, übernehme aus JSON
           if (!SCENE_GLB && cfg.model.url) {
-            mv.src = cfg.model.url;
+  mv.src = cfg.model.url + '#.glb';
+}
           }
         }
 
