@@ -119,11 +119,10 @@ function applyQueryFallback(){
 async function preflight() {
   try {
     const r = await fetch(cfg.modelUrl, { method:'HEAD', mode:'cors' });
-    if (!r.ok) console.warn(`GLB HEAD: ${r.status} ${r.statusText}`);
-  } catch (e) {
-    console.warn(`GLB HEAD fehlgeschlagen: ${e.message}`);
-  }
+    // Worker vor Patch antwortete 404 auf HEAD – das ist jetzt egal.
+  } catch {}
 }
+
 
 
 
