@@ -203,10 +203,10 @@ async function loadGLBRobust(url) {
 async function loadGLTFFlexible(url) {
   const abs = url;
 
-  // 1) laden
+  // Laden
   let res;
   try {
-    res = await fetch(abs, { mode: 'cors', credentials: 'omit' });
+    res = await fetch(abs, { mode: 'cors', credentials: 'omit', cache: 'no-cache' });
   } catch (e) {
     showErr('Fetch fehlgeschlagen: ' + e.message);
     throw e;
@@ -215,6 +215,32 @@ async function loadGLTFFlexible(url) {
     showErr(`HTTP ${res.status} ${res.statusText}`);
     throw new Error(`HTTP ${res.status}`);
   }
+
+  const ct = (res.headers.get('content-type') || '').toLowerCase();
+  const looksGLB =
+    /\.glb(?:[?#]|$)/i.test(abs) ||
+    ct.includes('model/gltf-binary') ||
+    ct.includes('application/octet-stream');
+
+  const loader = new GLTFLoader();
+  loader.setCrossOrigin('anonymous');
+  const draco = new DRACOLoader();
+  draco.setDecoderPath('https://www.gstatic.com/draco/v1/decoders/');
+  loader.setDRACOLoader(draco);
+
+  if (looksGLB) {
+    const buf = await res.arrayBuffer();
+    return new Promise((resolve, reject) =>
+      loader.parse(buf, '', resolve, reject)
+    );
+  } else {
+    const text = await res.text();                // ← **String**, nicht JSON-Objekt!
+    const base = abs.replace(/[^\/?#]*([?#].*)?$/, '');
+    return new Promise((resolve, reject) =>
+      loader.parse(text, base, resolve, reject)   // ← **text** übergeben
+    );
+  }
+}
 
   // 2) Binär vs. JSON erkennen
   const ct = (res.headers.get('content-type') || '').toLowerCase();
