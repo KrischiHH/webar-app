@@ -119,12 +119,12 @@ function applyQueryFallback(){
 async function preflight() {
   try {
     const r = await fetch(cfg.modelUrl, { method:'HEAD', mode:'cors' });
-    if (!r.ok) showErr(`GLB HEAD: ${r.status} ${r.statusText}`);
+    if (!r.ok) console.warn(`GLB HEAD: ${r.status} ${r.statusText}`);
   } catch (e) {
-    showErr(`GLB HEAD fehlgeschlagen: ${e.message}`);
+    console.warn(`GLB HEAD fehlgeschlagen: ${e.message}`);
   }
 }
-(async ()=>{ try{ await loadScene(); }catch{} applyQueryFallback(); await preflight(); init(); })();
+
 
 
   
