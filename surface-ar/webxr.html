@@ -22,6 +22,8 @@
 <script type="module">
 import * as THREE from 'three';
 import {GLTFLoader} from 'three/addons/loaders/GLTFLoader.js';
+import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
+import { DRACOLoader } from 'three/addons/loaders/DRACOLoader.js';
 
 let camera, scene, renderer, reticle, controller, hitTestSource=null, hitTestSourceRequested=false;
 let model=null, mixer=null, clips=[];
@@ -199,30 +201,86 @@ async function loadGLBRobust(url) {
   });
 }
 
+async function loadGLTFFlexible(url) {
+  const abs = url; // ggf. new URL(url, location.href).href, wenn du relative Pfade erwartest
+
+  // 1) Laden (eine GET-Response reicht uns; wir lesen daraus ct + Body)
+  let res;
+  try {
+    res = await fetch(abs, { mode: 'cors', credentials: 'omit' });
+  } catch (e) {
+    showErr('Fetch fehlgeschlagen: ' + e.message);
+    throw e;
+  }
+  if (!res.ok) {
+    showErr(`HTTP ${res.status} ${res.statusText}`);
+    throw new Error(`HTTP ${res.status}`);
+  }
+
+  const ct = (res.headers.get('content-type') || '').toLowerCase();
+  const looksGLB =
+    /\.glb(?:[?#]|$)/i.test(abs) ||
+    ct.includes('model/gltf-binary') ||
+    ct.includes('application/octet-stream');
+
+  // 2) Loader vorbereiten
+  const loader = new GLTFLoader();
+  loader.setCrossOrigin('anonymous');
+  const draco = new DRACOLoader();
+  draco.setDecoderPath('https://www.gstatic.com/draco/v1/decoders/');
+  loader.setDRACOLoader(draco);
+
+  // 3) Pfad wählen
+  if (looksGLB) {
+    const buf = await res.arrayBuffer();
+    return new Promise((resolve, reject) =>
+      loader.parse(buf, '', gltf => resolve(gltf), err => reject(err))
+    );
+  } else {
+    // .gltf (JSON)
+    const text = await res.text();
+    let json;
+    try { json = JSON.parse(text); }
+    catch (e) {
+      showErr('GLTF-JSON konnte nicht geparst werden.');
+      throw e;
+    }
+    // Basis-URL (für Buffer/Texture-URIs im .gltf)
+    const base = abs.replace(/[^\/?#]*([?#].*)?$/, '');
+    return new Promise((resolve, reject) =>
+      loader.parse(json, base, gltf => resolve(gltf), err => reject(err))
+    );
+  }
+}
+
+  
 /* ---------- Platzieren / Laden (mit robustem Loader) ---------- */
 async function onSelect() {
   if (!reticle.visible) return;
 
-  try {
-    if (!model) {
-      const gltf = await loadGLBRobust(cfg.modelUrl);
+  if (!model) {
+    try {
+      const gltf = await loadGLTFFlexible(cfg.modelUrl);
       model = gltf.scene;
-
-      const [sx,sy,sz]=cfg.scale;    model.scale.set(sx,sy,sz);
-      const [rx,ry,rz]=cfg.rotation; model.rotation.set(deg2rad(rx), deg2rad(ry), deg2rad(rz));
+      const [sx,sy,sz] = cfg.scale;    model.scale.set(sx,sy,sz);
+      const [rx,ry,rz] = cfg.rotation; model.rotation.set(deg2rad(rx), deg2rad(ry), deg2rad(rz));
       model.position.setFromMatrixPosition(reticle.matrix);
       scene.add(model);
 
       clips = gltf.animations || [];
-      if (clips.length){ mixer = new THREE.AnimationMixer(model); playClips(); }
-    } else {
-      model.position.setFromMatrixPosition(reticle.matrix);
+      if (clips.length) {
+        mixer = new THREE.AnimationMixer(model);
+        playClips();
+      }
+    } catch (err) {
+      console.error('GLTF load failed', err);
+      showErr('Fehler beim Laden des Objekts:\n' + (err?.message || err || 'Unbekannt'));
     }
-  } catch (err) {
-    console.error('GLB load failed (robust)', err);
-    showErr('Fehler beim Laden des Objekts:\n'+(err?.message||err||'Unbekannt'));
+  } else {
+    model.position.setFromMatrixPosition(reticle.matrix);
   }
 }
+
 
 // ---------- WebXR ----------
 async function startAR(){
