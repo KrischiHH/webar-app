@@ -29,15 +29,10 @@ const clock = new THREE.Clock();
 
 const showErr = (m)=>{ const el=document.getElementById('err'); el.textContent=m; el.style.display='block'; };
 
-/* ========= NEU: Param-Normalisierung wie im Native-Viewer ========= */
+/* ========= Param-Normalisierung ========= */
 const qs = new URLSearchParams(location.search);
-
-// akzeptiere ?scene=… (bevorzugt) oder Fallback ?src=…
 let sceneParam = (qs.get('scene') || qs.get('src') || '').trim();
-
-// optional: Worker-Base, sonst Default
 const workerBase = (qs.get('base') || 'https://area-publish.area-webar.workers.dev').replace(/\/$/, '');
-// optional: direkter GLB-Override
 const overrideGlb = (qs.get('glb') || '').trim();
 
 const isHttp = u => /^https?:\/\//i.test(u);
@@ -51,12 +46,11 @@ if (overrideGlb) {
   SCENE_GLB = overrideGlb;
 } else if (sceneParam) {
   if (isDataOrBlob(sceneParam)) {
-    SCENE_JSON = sceneParam;                    // Data-URL mit JSON
+    SCENE_JSON = sceneParam;
   } else if (isHttp(sceneParam)) {
-    if (isGlbLike(sceneParam)) SCENE_GLB = sceneParam; // direkte GLB-URL
-    else SCENE_JSON = sceneParam;               // vollständige scene.json-URL
+    if (isGlbLike(sceneParam)) SCENE_GLB = sceneParam;
+    else SCENE_JSON = sceneParam;
   } else {
-    // nur eine ID → Worker-Pfade bauen
     const id = sceneParam.replace(/\/+$/,'');
     SCENE_GLB  = `${workerBase}/scenes/${encodeURIComponent(id)}/scene.glb`;
     SCENE_JSON = `${workerBase}/scenes/${encodeURIComponent(id)}/scene.json`;
@@ -66,8 +60,8 @@ if (overrideGlb) {
 
 const cfg = {
   modelUrl: SCENE_GLB || 'https://modelviewer.dev/shared-assets/models/Astronaut.glb',
-  position: [0,0,0],        // wird bei Reticle-Tap überschrieben
-  rotation: [0,0,0],        // Grad!
+  position: [0,0,0],
+  rotation: [0,0,0],  // Grad
   scale:[0.6,0.6,0.6],
   animation: '*'
 };
@@ -78,9 +72,7 @@ const deg2rad = d => (d||0) * Math.PI/180;
 
 // ---------- Szene aus externer JSON (optional) ----------
 async function loadScene(){
-  // Wenn wir bereits eine GLB-URL haben → fertig
   if (SCENE_GLB) { cfg.modelUrl = SCENE_GLB; return; }
-  // Falls scene.json vorhanden: laden und übernehmen
   if (!SCENE_JSON) return;
 
   try{
@@ -88,17 +80,14 @@ async function loadScene(){
     if(!r.ok) throw new Error('scene.json Load '+r.status+' '+r.statusText);
     const j = await r.json();
 
-    // resolve relative model.url gegen die JSON-URL
     const resolveAgainstJson = (u)=>{
       if (!u) return u;
       if (isHttp(u) || isDataOrBlob(u)) return u;
-      // SCENE_JSON kann data: sein → dann relative URLs meiden
       try { return new URL(u, SCENE_JSON).href; } catch { return u; }
     };
 
     if (j?.model?.url)         cfg.modelUrl = resolveAgainstJson(j.model.url);
     if (Array.isArray(j?.model?.position)) cfg.position = j.model.position;
-    // akzeptiere sowohl rotationDeg (deg) als auch rotation (deg)
     if (Array.isArray(j?.model?.rotationDeg)) cfg.rotation = j.model.rotationDeg;
     else if (Array.isArray(j?.model?.rotation)) cfg.rotation = j.model.rotation;
     if (Array.isArray(j?.model?.scale))    cfg.scale    = j.model.scale;
@@ -109,18 +98,16 @@ async function loadScene(){
   }
 }
 
-// -------- Fallbacks aus Query (inkl. Bugfix px) --------
+// -------- Fallbacks aus Query --------
 function applyQueryFallback(){
   const glb = qs.get('glb');
   if (glb) cfg.modelUrl = glb;
 
-  // Editor schickt rx/ry/rz in RAD -> hier in Grad umwandeln
   const rx = qs.get('rx'), ry = qs.get('ry'), rz = qs.get('rz');
   if (rx!=null || ry!=null || rz!=null){
     cfg.rotation = [rad2deg(parseFloat(rx)), rad2deg(parseFloat(ry)), rad2deg(parseFloat(rz))].map(v=>isFinite(v)?v:0);
   }
 
-  // FIX: px kam vorher fälschlich aus 'pz'
   const px = parseFloat(qs.get('px')), py = parseFloat(qs.get('py')), pz = parseFloat(qs.get('pz'));
   if ([px,py,pz].some(v=>!isNaN(v))) cfg.position = [px||0, py||0, pz||0];
 
@@ -160,7 +147,6 @@ function init() {
 
   document.getElementById('enter').addEventListener('click', startAR);
 
-  // --- Handshake: Editor informieren, dass Viewer bereit ist
   try { window.opener && window.opener.postMessage({ type:'webar-ready' }, location.origin); } catch {}
 }
 
@@ -178,28 +164,51 @@ function playClips(){
   }
 }
 
-// ---------- Platzieren / Laden ----------
-function onSelect() {
+/* ---------- ROBUSTER GLB-LADER (NEU) ---------- */
+async function loadGLBRobust(url) {
+  const loader = new GLTFLoader();
+  loader.setCrossOrigin('anonymous');
+
+  // 1) Normaler Weg
+  try {
+    return await loader.loadAsync(url);
+  } catch (e1) {
+    console.warn('[GLB] loadAsync fehlgeschlagen – Fallback wird versucht', e1);
+  }
+
+  // 2) Fallback: selbst fetchen & parse()
+  const res = await fetch(url, { mode:'cors', credentials:'omit', cache:'no-cache' });
+  if (!res.ok) throw new Error(`fetch ${res.status} ${res.statusText}`);
+  const buf = await res.arrayBuffer();
+
+  return await new Promise((resolve, reject) => {
+    // Hinweis: Pfad leer, da GLB normalerweise alle Assets eingebettet hat.
+    loader.parse(buf, '', resolve, reject);
+  });
+}
+
+/* ---------- Platzieren / Laden (mit robustem Loader) ---------- */
+async function onSelect() {
   if (!reticle.visible) return;
 
-  const loader = new GLTFLoader();
-  loader.setCrossOrigin('anonymous'); // wichtig für CORS
-
-  if (!model) {
-    loader.load(cfg.modelUrl, (gltf) => {
+  try {
+    if (!model) {
+      const gltf = await loadGLBRobust(cfg.modelUrl);
       model = gltf.scene;
-      const [sx,sy,sz]=cfg.scale; model.scale.set(sx,sy,sz);
+
+      const [sx,sy,sz]=cfg.scale;    model.scale.set(sx,sy,sz);
       const [rx,ry,rz]=cfg.rotation; model.rotation.set(deg2rad(rx), deg2rad(ry), deg2rad(rz));
       model.position.setFromMatrixPosition(reticle.matrix);
       scene.add(model);
-      clips = gltf.animations||[];
+
+      clips = gltf.animations || [];
       if (clips.length){ mixer = new THREE.AnimationMixer(model); playClips(); }
-    }, undefined, (err)=>{
-      console.error('GLB load failed', err);
-      showErr('Fehler beim Laden des Objekts:\n'+(err?.message||err||'Unbekannt'));
-    });
-  } else {
-    model.position.setFromMatrixPosition(reticle.matrix);
+    } else {
+      model.position.setFromMatrixPosition(reticle.matrix);
+    }
+  } catch (err) {
+    console.error('GLB load failed (robust)', err);
+    showErr('Fehler beim Laden des Objekts:\n'+(err?.message||err||'Unbekannt'));
   }
 }
 
@@ -249,7 +258,7 @@ function applyTransformFromMsg(t){
   if (!t) return;
   cfg.scale    = [t.sx ?? 1, t.sy ?? 1, t.sz ?? 1];
   cfg.rotation = [rad2deg(t.rx), rad2deg(t.ry), rad2deg(t.rz)];
-  cfg.position = [t.px ?? 0, t.py ?? 0, t.pz ?? 0]; // bei Reticle-Tap nicht verwendet
+  cfg.position = [t.px ?? 0, t.py ?? 0, t.pz ?? 0];
   if (model){
     const [sx,sy,sz]=cfg.scale; model.scale.set(sx,sy,sz);
     const [rx,ry,rz]=cfg.rotation; model.rotation.set(deg2rad(rx), deg2rad(ry), deg2rad(rz));
