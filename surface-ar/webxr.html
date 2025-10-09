@@ -9,6 +9,7 @@
   #enter{position:fixed;left:50%;top:50%;transform:translate(-50%,-50%);padding:12px 18px;border-radius:12px;border:1px solid #555;background:#111;color:#fff}
   #msg{position:fixed;left:12px;bottom:12px;opacity:.9}
   #err{position:fixed;left:12px;top:12px;z-index:9;background:#b00020;color:#fff;padding:8px 10px;border-radius:8px;display:none;font:12px/1.35 monospace;max-width:min(92vw,680px);white-space:pre-wrap}
+  #badge{position:fixed;right:12px;top:12px;z-index:9;background:#0b1220;color:#9cf;padding:6px 8px;border-radius:8px;font:12px system-ui}
 </style>
 <script type="importmap">
 {
@@ -18,11 +19,17 @@
   }
 }
 </script>
+</head>
+<body>
+  <div id="err"></div>
+  <button id="enter">Start AR</button>
+  <div id="msg">Android Chrome empfohlen · Tippe auf den Boden, um das Modell zu platzieren</div>
+  <div id="badge">WEBXR BUILD</div>
 
 <script type="module">
 import * as THREE from 'three';
-import { GLTFLoader }   from 'three/addons/loaders/GLTFLoader.js';
-import { DRACOLoader }  from 'three/addons/loaders/DRACOLoader.js';
+import { GLTFLoader }  from 'three/addons/loaders/GLTFLoader.js';
+import { DRACOLoader } from 'three/addons/loaders/DRACOLoader.js';
 
 let camera, scene, renderer, reticle, controller, hitTestSource=null, hitTestSourceRequested=false;
 let model=null, mixer=null, clips=[];
@@ -32,13 +39,13 @@ const showErr = (m)=>{ const el=document.getElementById('err'); el.textContent=m
 
 /* ========= Param-Normalisierung ========= */
 const qs = new URLSearchParams(location.search);
-const sceneParam = (qs.get('scene') || qs.get('src') || '').trim();
+let sceneParam = (qs.get('scene') || qs.get('src') || '').trim();
 const workerBase = (qs.get('base') || 'https://area-publish.area-webar.workers.dev').replace(/\/$/, '');
 const overrideGlb = (qs.get('glb') || '').trim();
 
-const isHttp      = u => /^https?:\/\//i.test(u);
-const isDataOrBlob= u => /^data:|^blob:/i.test(u);
-const isGlbLike   = u => /\.(?:glb|gltf)(?:[?#]|$)/i.test(u);
+const isHttp     = u => /^https?:\/\//i.test(u);
+const isDataOrBlob = u => /^data:|^blob:/i.test(u);
+const isGlbLike  = u => /\.(?:glb|gltf)(?:[?#]|$)/i.test(u);
 
 let SCENE_GLB = '';
 let SCENE_JSON = '';
@@ -66,10 +73,11 @@ const cfg = {
   animation: '*'
 };
 
+// ---------- Utils ----------
 const rad2deg = r => (r||0) * 180/Math.PI;
 const deg2rad = d => (d||0) * Math.PI/180;
 
-/* ---------- Szene-JSON optional laden ---------- */
+// ---------- Szene aus externer JSON (optional) ----------
 async function loadScene(){
   if (SCENE_GLB) { cfg.modelUrl = SCENE_GLB; return; }
   if (!SCENE_JSON) return;
@@ -85,26 +93,28 @@ async function loadScene(){
       try { return new URL(u, SCENE_JSON).href; } catch { return u; }
     };
 
-    if (j?.model?.url)                 cfg.modelUrl = resolveAgainstJson(j.model.url);
-    if (Array.isArray(j?.model?.scale))    cfg.scale    = j.model.scale;
-    if (Array.isArray(j?.model?.rotation)) cfg.rotation = j.model.rotation;
+    if (j?.model?.url)         cfg.modelUrl = resolveAgainstJson(j.model.url);
+    if (Array.isArray(j?.model?.position)) cfg.position = j.model.position;
     if (Array.isArray(j?.model?.rotationDeg)) cfg.rotation = j.model.rotationDeg;
-    if (j?.model?.animation!=null)     cfg.animation= j.model.animation;
+    else if (Array.isArray(j?.model?.rotation)) cfg.rotation = j.model.rotation;
+    if (Array.isArray(j?.model?.scale))    cfg.scale    = j.model.scale;
+    if (j?.model?.animation!=null)         cfg.animation= j.model.animation;
   }catch(e){
     console.warn(e);
     showErr('scene.json konnte nicht geladen werden:\n'+e.message);
   }
 }
 
-/* ---------- Query-Fallbacks ---------- */
+// -------- Fallbacks aus Query --------
 function applyQueryFallback(){
-  const glb = qs.get('glb'); if (glb) cfg.modelUrl = glb;
+  const glb = qs.get('glb');
+  if (glb) cfg.modelUrl = glb;
 
   const rx = qs.get('rx'), ry = qs.get('ry'), rz = qs.get('rz');
   if (rx!=null || ry!=null || rz!=null){
-    cfg.rotation = [rad2deg(parseFloat(rx)), rad2deg(parseFloat(ry)), rad2deg(parseFloat(rz))]
-      .map(v=>isFinite(v)?v:0);
+    cfg.rotation = [rad2deg(parseFloat(rx)), rad2deg(parseFloat(ry)), rad2deg(parseFloat(rz))].map(v=>isFinite(v)?v:0);
   }
+
   const px = parseFloat(qs.get('px')), py = parseFloat(qs.get('py')), pz = parseFloat(qs.get('pz'));
   if ([px,py,pz].some(v=>!isNaN(v))) cfg.position = [px||0, py||0, pz||0];
 
@@ -112,45 +122,7 @@ function applyQueryFallback(){
   if ([sx,sy,sz].some(v=>!isNaN(v))) cfg.scale = [sx||1, sy||1, sz||1];
 }
 
-/* ---------- Robuster GLB/GLTF-Loader ---------- */
-async function loadGLTFFlexible(url) {
-  const abs = url;
-
-  let res;
-  try {
-    res = await fetch(abs, { mode: 'cors', credentials: 'omit', cache: 'no-cache' });
-  } catch (e) {
-    showErr('Fetch fehlgeschlagen: ' + e.message);
-    throw e;
-  }
-  if (!res.ok) {
-    showErr(`HTTP ${res.status} ${res.statusText}`);
-    throw new Error(`HTTP ${res.status}`);
-  }
-
-  const ct = (res.headers.get('content-type') || '').toLowerCase();
-  const looksGLB =
-    /\.glb(?:[?#]|$)/i.test(abs) ||
-    ct.includes('model/gltf-binary') ||
-    ct.includes('application/octet-stream');
-
-  const loader = new GLTFLoader();
-  loader.setCrossOrigin('anonymous');
-  const draco = new DRACOLoader();
-  draco.setDecoderPath('https://www.gstatic.com/draco/v1/decoders/');
-  loader.setDRACOLoader(draco);
-
-  if (looksGLB) {
-    const buf = await res.arrayBuffer();
-    return new Promise((resolve, reject) => loader.parse(buf, '', resolve, reject));
-  } else {
-    const text = await res.text();                  // **String**, nicht Objekt!
-    const base = abs.replace(/[^\/?#]*([?#].*)?$/, '');
-    return new Promise((resolve, reject) => loader.parse(text, base, resolve, reject));
-  }
-}
-
-/* ---------- THREE Init ---------- */
+// ---------- THREE Init ----------
 function init() {
   scene = new THREE.Scene();
   camera = new THREE.PerspectiveCamera();
@@ -184,19 +156,52 @@ function init() {
   try { window.opener && window.opener.postMessage({ type:'webar-ready' }, location.origin); } catch {}
 }
 
+// ---------- Model-Animation ----------
 function playClips(){
   if (!mixer || !clips.length) return;
   const a = cfg.animation;
   if (a==='none') return;
-  if (a==='*') clips.forEach(c=>mixer.clipAction(c).play());
-  else if (typeof a==='string'){
+  if (a==='*'){
+    clips.forEach(c=>mixer.clipAction(c).play());
+  } else if (typeof a==='string'){
     const c = clips.find(c=>c.name===a) || clips[0]; mixer.clipAction(c).play();
   } else {
     const idx = Math.max(0, Math.min(clips.length-1, parseInt(a||0,10))); mixer.clipAction(clips[idx]).play();
   }
 }
 
-/* ---------- Platzieren / Laden ---------- */
+/* ---------- Flexible GLB/GLTF Loader ---------- */
+async function loadGLTFFlexible(url) {
+  const res = await fetch(url, { mode: 'cors', credentials: 'omit' });
+  if (!res.ok) throw new Error(`HTTP ${res.status} ${res.statusText}`);
+
+  const ct = (res.headers.get('content-type') || '').toLowerCase();
+  const looksGLB = /\.glb(?:[?#]|$)/i.test(url) || ct.includes('model/gltf-binary') || ct.includes('application/octet-stream');
+
+  const loader = new GLTFLoader();
+  loader.setCrossOrigin('anonymous');
+  const draco = new DRACOLoader();
+  draco.setDecoderPath('https://www.gstatic.com/draco/v1/decoders/');
+  loader.setDRACOLoader(draco);
+
+  if (looksGLB) {
+    const buf = await res.arrayBuffer();
+    return new Promise((resolve, reject)=>
+      loader.parse(buf, '', gltf=>resolve(gltf), err=>reject(err))
+    );
+  } else {
+    const text = await res.text();
+    let json;
+    try { json = JSON.parse(text); }
+    catch (e) { showErr('GLTF-JSON konnte nicht geparst werden.'); throw e; }
+    const base = url.replace(/[^\/?#]*([?#].*)?$/, '');
+    return new Promise((resolve, reject)=>
+      loader.parse(json, base, gltf=>resolve(gltf), err=>reject(err))
+    );
+  }
+}
+
+/* ---------- Tap: platzieren & laden ---------- */
 async function onSelect() {
   if (!reticle.visible) return;
 
@@ -204,13 +209,16 @@ async function onSelect() {
     try {
       const gltf = await loadGLTFFlexible(cfg.modelUrl);
       model = gltf.scene;
-      const [sx,sy,sz]=cfg.scale;    model.scale.set(sx,sy,sz);
-      const [rx,ry,rz]=cfg.rotation; model.rotation.set(deg2rad(rx), deg2rad(ry), deg2rad(rz));
+      const [sx,sy,sz] = cfg.scale;    model.scale.set(sx,sy,sz);
+      const [rx,ry,rz] = cfg.rotation; model.rotation.set(deg2rad(rx), deg2rad(ry), deg2rad(rz));
       model.position.setFromMatrixPosition(reticle.matrix);
       scene.add(model);
 
       clips = gltf.animations || [];
-      if (clips.length){ mixer = new THREE.AnimationMixer(model); playClips(); }
+      if (clips.length) {
+        mixer = new THREE.AnimationMixer(model);
+        playClips();
+      }
     } catch (err) {
       console.error('GLTF load failed', err);
       showErr('Fehler beim Laden des Objekts:\n' + (err?.message || err || 'Unbekannt'));
@@ -220,7 +228,7 @@ async function onSelect() {
   }
 }
 
-/* ---------- WebXR ---------- */
+// ---------- WebXR ----------
 async function startAR(){
   if (!navigator.xr) { showErr('WebXR nicht verfügbar.'); return; }
   const isARSupported = await navigator.xr.isSessionSupported('immersive-ar');
@@ -261,17 +269,12 @@ function render(t, frame) {
   renderer.render(scene, camera);
 }
 
-/* ---------- Boot ---------- */
+// ---------- Boot ----------
 (async ()=>{
   try{ await loadScene(); }catch(e){ console.warn(e); }
   applyQueryFallback();
   init();
 })();
 </script>
-</head>
-<body>
-  <div id="err"></div>
-  <button id="enter">Start AR</button>
-  <div id="msg">Android Chrome empfohlen · Tippe auf den Boden, um das Modell zu platzieren</div>
 </body>
 </html>
