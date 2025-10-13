@@ -1,3 +1,15 @@
+# Dateien & Patches
+
+> Diese Seite enthält **alle notwendigen Änderungen**:
+>
+> 1. **Neue Datei** `area-viewer/scene-viewer/index.html` (fertiger Viewer mit Welcome-Kachel, Animation & Audio)
+> 2. **Patches** für `area-editor/index.html` (neuer Publish-Modus „Scene Viewer“, Anim/Audio/Poster Upload, Link-Gen)
+
+---
+
+## 1) Neue Datei — `/area-viewer/scene-viewer/index.html`
+
+```html
 <!doctype html>
 <html lang="de">
 <head>
@@ -203,3 +215,222 @@ addEventListener('resize', ()=>{ camera.aspect=innerWidth/innerHeight; camera.up
 </script>
 </body>
 </html>
+```
+
+---
+
+## 2) Patches — `area-editor/index.html`
+
+### 2.1 UI: neue Option im Anchor-Select
+
+Im `<select id="anchorMode" …>` **eine Option ergänzen** (unter „Native“):
+
+```html
+<option value="scene-viewer">Szene Viewer (ohne AR)</option>
+```
+
+---
+
+### 2.2 Helfer einfügen (Poster, Audio, Clip-Wahl)
+
+> **Suche** im `<script type="module">` nach `async function exportSceneGLB()` und **füge direkt darüber** ein:
+
+```js
+// === Poster aus Canvas (JPEG) ===
+async function capturePosterBlob(quality=0.9){
+  const c = renderer.domElement;
+  const dataUrl = c.toDataURL('image/jpeg', quality);
+  const res = await fetch(dataUrl);
+  return await res.blob(); // type image/jpeg
+}
+
+// === Erstes Audio-Objekt in der Szene (optional) ===
+function findFirstAudio(){
+  for (const rec of state.objects){
+    if (rec.media?.kind === 'audio'){
+      const fromFile = rec.file instanceof File ? rec.file : null;
+      const fromDataUrl = (!fromFile && rec.media?.src && rec.media.src.startsWith('data:')) ? rec.media.src : null;
+      return { rec, fromFile, fromDataUrl, loop: !!rec.media.loop, repeats: rec.media.repeats||1 };
+    }
+  }
+  return null;
+}
+async function dataUrlToBlob(u){ const r = await fetch(u); return await r.blob(); }
+
+// === Anim-Clip aus aktueller Auswahl ===
+function getSelectedClipNameForExport(){
+  if (state.selection.size === 1){
+    const rec = state.objects.find(o=>o.id===state.selectedId);
+    if (rec?.clips?.length){
+      const idx = parseInt(document.getElementById('animClip').value||'0',10) || 0;
+      const clip = rec.clips[idx] || rec.clips[0];
+      return (clip?.name)||null;
+    }
+  }
+  return "*"; // default: erster Clip
+}
+```
+
+---
+
+### 2.3 Export: Animationen in den GLB übernehmen
+
+> **Ersetze** deine `exportSceneGLB()`-Funktion vollständig durch:
+
+```js
+async function exportSceneGLB(){
+  const exporter = new GLTFExporter();
+  const exportRoot = cloneForExport();
+
+  // alle Clips einsammeln (für den Export)
+  const allClips = [];
+  state.objects.forEach(r => { if (r?.clips?.length) r.clips.forEach(c => allClips.push(c)); });
+
+  return new Promise((resolve, reject)=>{
+    exporter.parse(
+      exportRoot,
+      (result)=>{
+        try{
+          if (result instanceof ArrayBuffer || ArrayBuffer.isView(result)){
+            const ab = (result instanceof ArrayBuffer) ? result : result.buffer;
+            return resolve(new Blob([ab], { type:'model/gltf-binary' }));
+          }
+          const glbBlob = makeGLBFromJSON(result);
+          resolve(glbBlob);
+        }catch(e){ reject(e); }
+      },
+      { binary:true, onlyVisible:true, embedImages:true, animations: allClips }
+    );
+  });
+}
+```
+
+---
+
+### 2.4 scene.json für „Scene Viewer“ erzeugen
+
+> **Füge** (z. B. unter `buildSceneJSON`) diese Funktion ein:
+
+```js
+function buildSceneViewerJSON_CF({ sceneId, workerOrigin }){
+  const base = `${workerOrigin}/scenes/${encodeURIComponent(sceneId)}`;
+  const clipName = getSelectedClipNameForExport();
+  const audio = findFirstAudio();
+
+  return {
+    ui: {
+      showGround: true,
+      autocenter: true,
+      welcome: {
+        eyebrow: "ARea – Szene",
+        title: projectName || sceneId,
+        desc: "Klicke auf OK, um zu starten.",
+        cta: "OK",
+        poster: `${base}/poster.jpg`
+      }
+    },
+    camera: { fov: 50, start:[2.2,1.6,3.0], lookAt:[0,1.1,0] },
+    model:  { url: `${base}/scene.glb`, scale: 1, rotateY: 0 },
+    animation: {
+      enabled: true,
+      clipName,
+      start: "onStart",           // onStart | onClick | button
+      loop: (document.getElementById('animLoop')?.value||'repeat') === 'repeat',
+      iterations: parseInt(document.getElementById('animRepeats')?.value||'9999',10)||9999,
+      clampWhenFinished: true,
+      crossfade: 0.25,
+      timeScale: 1
+    },
+    audio: audio ? {
+      url: `${base}/audio.mp3`,
+      autoplay: "withAnimation",  // oder "auto" / "button"
+      loop: !!audio.loop,
+      volume: 0.85
+    } : { url: "" },
+    triggers: { buttonLabel: "Animation abspielen", clickAnywhere: false }
+  };
+}
+```
+
+---
+
+### 2.5 `publish()` erweitern (Scene Viewer Branch)
+
+> In deiner `publish()` ersetze den Block **ab** `const mode = ...` **bis vor** dem `fetch(EP, …)` durch:
+
+```js
+const mode = (document.getElementById('anchorMode')?.value || 'surface-webxr');
+const workerOrigin = new URL(EP).origin;
+const sceneBase    = `${workerOrigin}/scenes/${sceneId}/`;
+
+let viewerUrl;
+const form = new FormData();
+form.append('sceneId', sceneId);
+
+// GLB immer anhängen
+form.append('file', new File([glbBlob], 'scene.glb', { type:'model/gltf-binary' }));
+
+if (mode === 'scene-viewer'){
+  // Poster & optional Audio
+  const posterBlob = await capturePosterBlob(0.9);
+  form.append('file', new File([posterBlob], 'poster.jpg', { type:'image/jpeg' }));
+
+  const audio = findFirstAudio();
+  if (audio){
+    const audioBlob = audio.fromFile ? audio.fromFile : (audio.fromDataUrl ? await dataUrlToBlob(audio.fromDataUrl) : null);
+    if (audioBlob){
+      const mime = (audioBlob.type||'audio/mpeg');
+      form.append('file', new File([audioBlob], 'audio.mp3', { type: mime }));
+    }
+  }
+
+  // Scene-Viewer-Config
+  const sceneJson = buildSceneViewerJSON_CF({ sceneId, workerOrigin });
+  form.append('file', new File([JSON.stringify(sceneJson,null,2)], 'scene.json', { type:'application/json' }));
+
+} else {
+  // Bestehende Viewer (WebXR / Native / Image)
+  const glbUrl    = (mode === 'native' && (document.getElementById('nativeGlbUrl')?.value||'').trim())
+                      ? (document.getElementById('nativeGlbUrl').value.trim())
+                      : (sceneBase + 'scene.glb');
+  const usdzUrl   = (mode === 'native' && (document.getElementById('nativeUsdzUrl')?.value||'').trim())
+                      ? (document.getElementById('nativeUsdzUrl').value.trim())
+                      : null;
+  const targetUrl = (mode === 'image'  && (document.getElementById('imageTargetUrl')?.value||'').trim())
+                      ? (document.getElementById('imageTargetUrl').value.trim())
+                      : null;
+
+  const sceneJson = buildSceneJSON({ sceneId, title: projectName, mode, glbUrl, usdzUrl, targetUrl });
+  form.append('file', new File([JSON.stringify(sceneJson,null,2)], 'scene.json', { type:'application/json' }));
+}
+```
+
+> **Unverändert** bleiben anschließend dein `fetch(EP, …)` sowie die Erfolgsauswertung – **ergänze nur die Ziel-URL** um den neuen Pfad:
+
+```js
+const viewerBase = (window.__AREA||{}).VIEWER_BASE || 'https://area-viewer.pages.dev';
+const entryByMode = {
+  'surface-webxr': '/webxr.html',
+  'native':        '/index.html',
+  'image':         '/image-ar/viewer.html',
+  'scene-viewer':  '/scene-viewer/index.html' // ← NEU
+};
+const entry = entryByMode[mode] || '/webxr.html';
+const viewerUrl = json.viewerUrl || `${viewerBase}${entry}?scene=${encodeURIComponent(sceneId)}&base=${encodeURIComponent(workerOrigin)}`;
+```
+
+---
+
+## 3) Ergebnis & Aufruf
+
+Nach dem Publish (Modus **„Szene Viewer“**) bekommst du den Link:
+
+```
+https://area-viewer.pages.dev/scene-viewer/index.html?scene=<ID>&base=https://area-publish.area-webar.workers.dev
+```
+
+* **Welcome-Kachel** erscheint (Poster = Canvas-Snapshot)
+* Klick „OK“ → **Animation** startet (endlos oder `iterations`-gezählt)
+* **Audio** spielt je nach Modus (Default: `withAnimation`)
+
+> Debug/Fallback zu jsDelivr brauchst du nicht – Cloudflare bleibt die Standard-Quelle, so wie im Projekt vorgesehen.
