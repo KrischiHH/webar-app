@@ -97,7 +97,7 @@ const DEFAULTS = {
   triggers:{ buttonLabel:'Animation abspielen', clickAnywhere:false }
 };
 
-const renderer = new THREE.WebGLRenderer({ antialias:true });
+const renderer = new THREE.WebGLRenderer({ antialias:true, powerPreference:'high-performance' });
 renderer.setPixelRatio(Math.min(devicePixelRatio,2));
 renderer.outputColorSpace = THREE.SRGBColorSpace;
 renderer.toneMapping = THREE.ACESFilmicToneMapping;
@@ -132,6 +132,12 @@ const cfg = await (async()=>{
   }catch(e){ toast('Config konnte nicht geladen werden – Defaults genutzt.'); return structuredClone(DEFAULTS); }
 })();
 
+  function resolveRel(u, baseUrl){ if(!u) return u; try{ return new URL(u, baseUrl).href; }catch{ return u; } }
+if (cfg.model?.url) cfg.model.url = resolveRel(cfg.model.url, configURL);
+if (cfg.audio?.url) cfg.audio.url = resolveRel(cfg.audio.url, configURL);
+if (cfg.ui?.welcome?.poster) cfg.ui.welcome.poster = resolveRel(cfg.ui.welcome.poster, configURL);
+
+
 if (cfg.ui?.welcome){
   wEyebrow.textContent = cfg.ui.welcome.eyebrow || DEFAULTS.ui.welcome.eyebrow;
   wTitle.textContent   = cfg.ui.welcome.title   || DEFAULTS.ui.welcome.title;
@@ -147,7 +153,7 @@ if (cfg.camera){
 }
 ground.visible = !!cfg.ui?.showGround;
 
-const loader = new GLTFLoader(); loader.crossOrigin='anonymous';
+const loader = new GLTFLoader();loader.setCrossOrigin('anonymous');
 let gltf=null;
 try {
   gltf = await loader.loadAsync(cfg.model.url);
