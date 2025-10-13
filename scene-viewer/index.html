@@ -82,7 +82,7 @@ function toast(m){ const d=document.createElement('div'); d.className='toast'; d
 
 const qs = new URLSearchParams(location.search);
 const workerBase = (qs.get('base') || 'https://area-publish.area-webar.workers.dev').replace(/\/$/,'');
-const sceneId = (qs.get('scene') || '').trim();
+const sceneId = (qs.get('scene') || qs.get('id') || '').trim();
 const src = (qs.get('src') || '').trim();
 
 const configURL = src || (sceneId ? `${workerBase}/scenes/${encodeURIComponent(sceneId)}/scene.json` : '');
@@ -136,13 +136,16 @@ const cfg = await (async()=>{
 if (cfg.model?.url) cfg.model.url = resolveRel(cfg.model.url, configURL);
 if (cfg.audio?.url) cfg.audio.url = resolveRel(cfg.audio.url, configURL);
 if (cfg.ui?.welcome?.poster) cfg.ui.welcome.poster = resolveRel(cfg.ui.welcome.poster, configURL);
+  document.title = (cfg.ui?.welcome?.title || 'ARea – Scene Viewer');
 
 
 if (cfg.ui?.welcome){
   wEyebrow.textContent = cfg.ui.welcome.eyebrow || DEFAULTS.ui.welcome.eyebrow;
   wTitle.textContent   = cfg.ui.welcome.title   || DEFAULTS.ui.welcome.title;
   wDesc.textContent    = cfg.ui.welcome.desc    || DEFAULTS.ui.welcome.desc;
-  if (cfg.ui.welcome.poster){ poster.src = cfg.ui.welcome.poster; } else { document.querySelector('.poster').style.display='none'; }
+  wStart.textContent   = (cfg.ui?.welcome?.cta || DEFAULTS.ui?.welcome?.cta || 'OK');
+  if (cfg.ui.welcome.poster){ poster.src = cfg.ui.welcome.poster; }
+  else { document.querySelector('.poster').style.display='none'; }
   welcome.hidden = false;
 }
 
@@ -201,10 +204,12 @@ if (cfg.audio?.url){
 }
 
 // Start- & HUD-Events
-function playAnim(reset=false){ if(!action) return; if(reset){ action.reset(); playCount=0; } action.enabled=true; action.fadeIn(cfg.animation.crossfade||0).play(); playing=true; if(cfg.audio?.autoplay==='withAnimation'&&audioReady&&!audio.isPlaying) audio.play(); }
-function pauseAnim(){ if(!action) return; action.paused = true; playing=false; }
-function playSound(){ if(!audioReady) return; if(!audio.isPlaying){ audio.play(); btnSound.textContent='🔊'; } }
-function toggleSound(){ if(!audioReady) return; if(audio.isPlaying){ audio.pause(); btnSound.textContent='🔈'; } else { listener.context.resume?.(); audio.play(); btnSound.textContent='🔊'; } }
+function playAnim(reset=false){ if(!action) return; if(reset){ action.reset(); playCount=0; } action.enabled=true; action.fadeIn(cfg.animation.crossfade||0).play(); playing=true; if(cfg.audio?.autoplay==='withAnimation' && audioReady && !audio.isPlaying){ audio.play(); }
+function pauseAnim(){ if(!action) return; action.paused = true; playing=false; } if(cfg.audio?.autoplay==='withAnimation' && audioReady && audio.isPlaying){ audio.stop(); }
+function playSound(){ if(!audioReady) return; listener.context.resume?.(); setMuted(false); if(!audio.isPlaying) audio.play(); }
+let muted=false; const baseVolume = cfg.audio?.volume ?? .85; function setMuted(on){muted = !!on;if(audioReady) audio.setVolume(muted ? 0 : baseVolume);btnSound.textContent = muted ? '🔈' : '🔊';
+}
+function toggleSound(){ if(!audioReady) return; setMuted(!muted); }
 
 wStart.addEventListener('click', ()=>{ listener.context.resume?.(); if(cfg.animation?.start==='onStart') playAnim(); if(cfg.audio?.url && cfg.audio.autoplay==='auto') playSound(); welcome.hidden=true; $('#hud').hidden=false; });
 renderer.domElement.addEventListener('pointerdown', ()=>{ if(cfg.animation?.start==='onClick') playAnim(); });
