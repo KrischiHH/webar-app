@@ -1,15 +1,3 @@
-# Dateien & Patches
-
-> Diese Seite enthält **alle notwendigen Änderungen**:
->
-> 1. **Neue Datei** `area-viewer/scene-viewer/index.html` (fertiger Viewer mit Welcome-Kachel, Animation & Audio)
-> 2. **Patches** für `area-editor/index.html` (neuer Publish-Modus „Scene Viewer“, Anim/Audio/Poster Upload, Link-Gen)
-
----
-
-## 1) Neue Datei — `/area-viewer/scene-viewer/index.html`
-
-```html
 <!doctype html>
 <html lang="de">
 <head>
@@ -132,12 +120,11 @@ const cfg = await (async()=>{
   }catch(e){ toast('Config konnte nicht geladen werden – Defaults genutzt.'); return structuredClone(DEFAULTS); }
 })();
 
-  function resolveRel(u, baseUrl){ if(!u) return u; try{ return new URL(u, baseUrl).href; }catch{ return u; } }
+function resolveRel(u, baseUrl){ if(!u) return u; try{ return new URL(u, baseUrl).href; }catch{ return u; } }
 if (cfg.model?.url) cfg.model.url = resolveRel(cfg.model.url, configURL);
 if (cfg.audio?.url) cfg.audio.url = resolveRel(cfg.audio.url, configURL);
 if (cfg.ui?.welcome?.poster) cfg.ui.welcome.poster = resolveRel(cfg.ui.welcome.poster, configURL);
-  document.title = (cfg.ui?.welcome?.title || 'ARea – Scene Viewer');
-
+document.title = (cfg.ui?.welcome?.title || 'ARea – Scene Viewer');
 
 if (cfg.ui?.welcome){
   wEyebrow.textContent = cfg.ui.welcome.eyebrow || DEFAULTS.ui.welcome.eyebrow;
@@ -156,25 +143,25 @@ if (cfg.camera){
 }
 ground.visible = !!cfg.ui?.showGround;
 
-const loader = new GLTFLoader();loader.setCrossOrigin('anonymous');
+const loader = new GLTFLoader(); loader.setCrossOrigin('anonymous');
 let gltf=null;
-try {
-  gltf = await loader.loadAsync(cfg.model.url);
-} catch(e) { toast('GLB laden fehlgeschlagen'); console.warn(e); }
+try { gltf = await loader.loadAsync(cfg.model.url); }
+catch(e) { toast('GLB laden fehlgeschlagen'); console.warn(e); }
 const root = gltf?.scene || new THREE.Group();
 root.traverse(o=>{ if(o.isMesh){ if(o.material?.map) o.material.map.colorSpace = THREE.SRGBColorSpace; }});
 root.scale.setScalar(cfg.model.scale||1); root.rotation.y = cfg.model.rotateY||0; scene.add(root);
 
-// Auto-Center auf Ground
+// Auto-Center
 if (cfg.ui?.autocenter && root){
   const box = new THREE.Box3().setFromObject(root);
-  const size = new THREE.Vector3(); box.getSize(size); const center = new THREE.Vector3(); box.getCenter(center);
+  const size = new THREE.Vector3(); box.getSize(size);
+  const center = new THREE.Vector3(); box.getCenter(center);
   root.position.x += -center.x; root.position.z += -center.z; root.position.y += -box.min.y;
   const radius = Math.max(size.x,size.y,size.z)*0.6; const idealZ = radius/Math.tan((camera.fov*Math.PI/180)/2);
   camera.position.set(idealZ*0.8, radius*0.8, idealZ*1.1); controls.target.set(0, size.y*0.5, 0);
 }
 
-// Animationen
+// Animation
 if (gltf?.animations?.length && cfg.animation.enabled){
   mixer = new THREE.AnimationMixer(root);
   clip = cfg.animation.clipName ? THREE.AnimationClip.findByName(gltf.animations, cfg.animation.clipName) : gltf.animations[0];
@@ -203,38 +190,30 @@ if (cfg.audio?.url){
   }catch(e){ console.warn('Audio load fail', e); }
 }
 
-// Start- & HUD-Events
+// Start & HUD
 function playAnim(reset = false){
   if (!action) return;
   if (reset){ action.reset(); playCount = 0; }
   action.enabled = true;
   action.fadeIn(cfg.animation.crossfade || 0).play();
   playing = true;
-
-  // Audio evtl. zusammen mit der Animation starten
   if (cfg.audio?.autoplay === 'withAnimation' && audioReady && !audio.isPlaying){
     audio.play();
   }
 }
-
 function pauseAnim(){
   if (!action) return;
-  action.paused = true;
-  playing = false;
-
-  // Wenn Audio an Animation gekoppelt ist, beim Pausieren stoppen
+  action.paused = true; playing = false;
   if (cfg.audio?.autoplay === 'withAnimation' && audioReady && audio.isPlaying){
-    audio.stop(); // (THREE.Audio hat i.d.R. stop(), nicht zuverlässig pause())
+    audio.stop();
   }
 }
-
 function playSound(){
   if (!audioReady) return;
   listener.context.resume?.();
   setMuted(false);
   if (!audio.isPlaying) audio.play();
 }
-
 let muted = false;
 const baseVolume = cfg.audio?.volume ?? 0.85;
 function setMuted(on){
@@ -248,8 +227,7 @@ wStart.addEventListener('click', ()=>{
   listener.context.resume?.();
   if (cfg.animation?.start === 'onStart') playAnim();
   if (cfg.audio?.url && cfg.audio.autoplay === 'auto') playSound();
-  welcome.hidden = true;
-  $('#hud').hidden = false;
+  welcome.hidden = true; document.getElementById('hud').hidden = false;
 });
 renderer.domElement.addEventListener('pointerdown', ()=>{
   if (cfg.animation?.start === 'onClick') playAnim();
@@ -259,7 +237,6 @@ btnPlay.addEventListener('click', ()=>{ if (!action) return; if (playing){ pause
 btnReplay.addEventListener('click', ()=>{ if (!action) return; action.reset(); playCount = 0; playAnim(true); });
 btnSound.addEventListener('click', toggleSound);
 
-
 // Loop
 renderer.setAnimationLoop(()=>{
   const dt = clock.getDelta(); mixer?.update(dt); controls.update(); renderer.render(scene, camera);
@@ -268,222 +245,3 @@ addEventListener('resize', ()=>{ camera.aspect=innerWidth/innerHeight; camera.up
 </script>
 </body>
 </html>
-```
-
----
-
-## 2) Patches — `area-editor/index.html`
-
-### 2.1 UI: neue Option im Anchor-Select
-
-Im `<select id="anchorMode" …>` **eine Option ergänzen** (unter „Native“):
-
-```html
-<option value="scene-viewer">Szene Viewer (ohne AR)</option>
-```
-
----
-
-### 2.2 Helfer einfügen (Poster, Audio, Clip-Wahl)
-
-> **Suche** im `<script type="module">` nach `async function exportSceneGLB()` und **füge direkt darüber** ein:
-
-```js
-// === Poster aus Canvas (JPEG) ===
-async function capturePosterBlob(quality=0.9){
-  const c = renderer.domElement;
-  const dataUrl = c.toDataURL('image/jpeg', quality);
-  const res = await fetch(dataUrl);
-  return await res.blob(); // type image/jpeg
-}
-
-// === Erstes Audio-Objekt in der Szene (optional) ===
-function findFirstAudio(){
-  for (const rec of state.objects){
-    if (rec.media?.kind === 'audio'){
-      const fromFile = rec.file instanceof File ? rec.file : null;
-      const fromDataUrl = (!fromFile && rec.media?.src && rec.media.src.startsWith('data:')) ? rec.media.src : null;
-      return { rec, fromFile, fromDataUrl, loop: !!rec.media.loop, repeats: rec.media.repeats||1 };
-    }
-  }
-  return null;
-}
-async function dataUrlToBlob(u){ const r = await fetch(u); return await r.blob(); }
-
-// === Anim-Clip aus aktueller Auswahl ===
-function getSelectedClipNameForExport(){
-  if (state.selection.size === 1){
-    const rec = state.objects.find(o=>o.id===state.selectedId);
-    if (rec?.clips?.length){
-      const idx = parseInt(document.getElementById('animClip').value||'0',10) || 0;
-      const clip = rec.clips[idx] || rec.clips[0];
-      return (clip?.name)||null;
-    }
-  }
-  return "*"; // default: erster Clip
-}
-```
-
----
-
-### 2.3 Export: Animationen in den GLB übernehmen
-
-> **Ersetze** deine `exportSceneGLB()`-Funktion vollständig durch:
-
-```js
-async function exportSceneGLB(){
-  const exporter = new GLTFExporter();
-  const exportRoot = cloneForExport();
-
-  // alle Clips einsammeln (für den Export)
-  const allClips = [];
-  state.objects.forEach(r => { if (r?.clips?.length) r.clips.forEach(c => allClips.push(c)); });
-
-  return new Promise((resolve, reject)=>{
-    exporter.parse(
-      exportRoot,
-      (result)=>{
-        try{
-          if (result instanceof ArrayBuffer || ArrayBuffer.isView(result)){
-            const ab = (result instanceof ArrayBuffer) ? result : result.buffer;
-            return resolve(new Blob([ab], { type:'model/gltf-binary' }));
-          }
-          const glbBlob = makeGLBFromJSON(result);
-          resolve(glbBlob);
-        }catch(e){ reject(e); }
-      },
-      { binary:true, onlyVisible:true, embedImages:true, animations: allClips }
-    );
-  });
-}
-```
-
----
-
-### 2.4 scene.json für „Scene Viewer“ erzeugen
-
-> **Füge** (z. B. unter `buildSceneJSON`) diese Funktion ein:
-
-```js
-function buildSceneViewerJSON_CF({ sceneId, workerOrigin }){
-  const base = `${workerOrigin}/scenes/${encodeURIComponent(sceneId)}`;
-  const clipName = getSelectedClipNameForExport();
-  const audio = findFirstAudio();
-
-  return {
-    ui: {
-      showGround: true,
-      autocenter: true,
-      welcome: {
-        eyebrow: "ARea – Szene",
-        title: projectName || sceneId,
-        desc: "Klicke auf OK, um zu starten.",
-        cta: "OK",
-        poster: `${base}/poster.jpg`
-      }
-    },
-    camera: { fov: 50, start:[2.2,1.6,3.0], lookAt:[0,1.1,0] },
-    model:  { url: `${base}/scene.glb`, scale: 1, rotateY: 0 },
-    animation: {
-      enabled: true,
-      clipName,
-      start: "onStart",           // onStart | onClick | button
-      loop: (document.getElementById('animLoop')?.value||'repeat') === 'repeat',
-      iterations: parseInt(document.getElementById('animRepeats')?.value||'9999',10)||9999,
-      clampWhenFinished: true,
-      crossfade: 0.25,
-      timeScale: 1
-    },
-    audio: audio ? {
-      url: `${base}/audio.mp3`,
-      autoplay: "withAnimation",  // oder "auto" / "button"
-      loop: !!audio.loop,
-      volume: 0.85
-    } : { url: "" },
-    triggers: { buttonLabel: "Animation abspielen", clickAnywhere: false }
-  };
-}
-```
-
----
-
-### 2.5 `publish()` erweitern (Scene Viewer Branch)
-
-> In deiner `publish()` ersetze den Block **ab** `const mode = ...` **bis vor** dem `fetch(EP, …)` durch:
-
-```js
-const mode = (document.getElementById('anchorMode')?.value || 'surface-webxr');
-const workerOrigin = new URL(EP).origin;
-const sceneBase    = `${workerOrigin}/scenes/${sceneId}/`;
-
-let viewerUrl;
-const form = new FormData();
-form.append('sceneId', sceneId);
-
-// GLB immer anhängen
-form.append('file', new File([glbBlob], 'scene.glb', { type:'model/gltf-binary' }));
-
-if (mode === 'scene-viewer'){
-  // Poster & optional Audio
-  const posterBlob = await capturePosterBlob(0.9);
-  form.append('file', new File([posterBlob], 'poster.jpg', { type:'image/jpeg' }));
-
-  const audio = findFirstAudio();
-  if (audio){
-    const audioBlob = audio.fromFile ? audio.fromFile : (audio.fromDataUrl ? await dataUrlToBlob(audio.fromDataUrl) : null);
-    if (audioBlob){
-      const mime = (audioBlob.type||'audio/mpeg');
-      form.append('file', new File([audioBlob], 'audio.mp3', { type: mime }));
-    }
-  }
-
-  // Scene-Viewer-Config
-  const sceneJson = buildSceneViewerJSON_CF({ sceneId, workerOrigin });
-  form.append('file', new File([JSON.stringify(sceneJson,null,2)], 'scene.json', { type:'application/json' }));
-
-} else {
-  // Bestehende Viewer (WebXR / Native / Image)
-  const glbUrl    = (mode === 'native' && (document.getElementById('nativeGlbUrl')?.value||'').trim())
-                      ? (document.getElementById('nativeGlbUrl').value.trim())
-                      : (sceneBase + 'scene.glb');
-  const usdzUrl   = (mode === 'native' && (document.getElementById('nativeUsdzUrl')?.value||'').trim())
-                      ? (document.getElementById('nativeUsdzUrl').value.trim())
-                      : null;
-  const targetUrl = (mode === 'image'  && (document.getElementById('imageTargetUrl')?.value||'').trim())
-                      ? (document.getElementById('imageTargetUrl').value.trim())
-                      : null;
-
-  const sceneJson = buildSceneJSON({ sceneId, title: projectName, mode, glbUrl, usdzUrl, targetUrl });
-  form.append('file', new File([JSON.stringify(sceneJson,null,2)], 'scene.json', { type:'application/json' }));
-}
-```
-
-> **Unverändert** bleiben anschließend dein `fetch(EP, …)` sowie die Erfolgsauswertung – **ergänze nur die Ziel-URL** um den neuen Pfad:
-
-```js
-const viewerBase = (window.__AREA||{}).VIEWER_BASE || 'https://area-viewer.pages.dev';
-const entryByMode = {
-  'surface-webxr': '/webxr.html',
-  'native':        '/index.html',
-  'image':         '/image-ar/viewer.html',
-  'scene-viewer':  '/scene-viewer/index.html' // ← NEU
-};
-const entry = entryByMode[mode] || '/webxr.html';
-const viewerUrl = json.viewerUrl || `${viewerBase}${entry}?scene=${encodeURIComponent(sceneId)}&base=${encodeURIComponent(workerOrigin)}`;
-```
-
----
-
-## 3) Ergebnis & Aufruf
-
-Nach dem Publish (Modus **„Szene Viewer“**) bekommst du den Link:
-
-```
-https://area-viewer.pages.dev/scene-viewer/index.html?scene=<ID>&base=https://area-publish.area-webar.workers.dev
-```
-
-* **Welcome-Kachel** erscheint (Poster = Canvas-Snapshot)
-* Klick „OK“ → **Animation** startet (endlos oder `iterations`-gezählt)
-* **Audio** spielt je nach Modus (Default: `withAnimation`)
-
-> Debug/Fallback zu jsDelivr brauchst du nicht – Cloudflare bleibt die Standard-Quelle, so wie im Projekt vorgesehen.
