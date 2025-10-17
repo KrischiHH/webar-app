@@ -69,12 +69,23 @@ const app = $('#app'); const toasts = $('#toasts');
 function toast(m){ const d=document.createElement('div'); d.className='toast'; d.textContent=m; toasts.appendChild(d); setTimeout(()=>d.remove(),2600); }
 
 const qs = new URLSearchParams(location.search);
-const workerBase = (qs.get('base') || 'https://area-publish.area-webar.workers.dev').replace(/\/$/,'');
-const sceneId = (qs.get('scene') || qs.get('id') || '').trim();
-const src = (qs.get('src') || '').trim();
 
-const configURL = src || (sceneId ? `${workerBase}/scenes/${encodeURIComponent(sceneId)}/scene.json` : '');
-if (!configURL){ toast('Keine scene.json – ?scene=ID oder ?src=URL verwenden.'); }
+// Neu: Unterstützung für ?config=… (Data-URL oder http(s))
+const configParam = (qs.get('config') || '').trim();
+
+// Behalte alte Modi als Fallbacks (Kompatibilität)
+const workerBase = (qs.get('base') || 'https://area-publish.area-webar.workers.dev').replace(/\/$/,'');
+const sceneId    = (qs.get('scene') || qs.get('id') || '').trim();
+const src        = (qs.get('src') || '').trim();
+
+// Reihenfolge: config → src → scene/base
+const configURL = configParam
+  || src
+  || (sceneId ? `${workerBase}/scenes/${encodeURIComponent(sceneId)}/scene.json` : '');
+
+if (!configURL){
+  toast('Keine Konfiguration gefunden – nutze ?config=, ?src= oder ?scene= mit ?base=');
+}
 
 const DEFAULTS = {
   ui:{ showGround:true, autocenter:true, welcome:{ eyebrow:'ARea – Szene', title:'Willkommen', desc:'Klicke auf OK, um zu starten.', cta:'OK', poster:'' } },
@@ -115,12 +126,23 @@ const hud = $('#hud'), btnPlay = $('#btnPlay'), btnReplay = $('#btnReplay'), btn
 function deepMerge(a,b){ for(const k in b){ if(b[k] && typeof b[k]==='object' && !Array.isArray(b[k])) a[k]=deepMerge(a[k]||{},b[k]); else a[k]=b[k]; } return a; }
 
 const cfg = await (async()=>{
-  try{ const r = await fetch(configURL, { mode:'cors', cache:'no-cache' }); if(!r.ok) throw new Error(r.status+' '+r.statusText);
-       const j = await r.json(); return deepMerge(structuredClone(DEFAULTS), j);
-  }catch(e){ toast('Config konnte nicht geladen werden – Defaults genutzt.'); return structuredClone(DEFAULTS); }
+  try{
+    const r = await fetch(configURL, { mode:'cors', cache:'no-cache' });
+    if(!r.ok) throw new Error(r.status+' '+r.statusText);
+    const j = await r.json();
+    return deepMerge(structuredClone(DEFAULTS), j);
+  }catch(e){
+    console.warn('Config load failed for:', configURL, e);
+    toast('Config konnte nicht geladen werden – Defaults genutzt.');
+    return structuredClone(DEFAULTS);
+  }
 })();
 
-function resolveRel(u, baseUrl){ if(!u) return u; try{ return new URL(u, baseUrl).href; }catch{ return u; } }
+// Hilfsfunktion: relative Pfade in der config zu absoluten auflösen
+function resolveRel(u, baseUrl){
+  if(!u) return u;
+  try{ return new URL(u, baseUrl).href; }catch{ return u; }
+}
 if (cfg.model?.url) cfg.model.url = resolveRel(cfg.model.url, configURL);
 if (cfg.audio?.url) cfg.audio.url = resolveRel(cfg.audio.url, configURL);
 if (cfg.ui?.welcome?.poster) cfg.ui.welcome.poster = resolveRel(cfg.ui.welcome.poster, configURL);
@@ -145,8 +167,13 @@ ground.visible = !!cfg.ui?.showGround;
 
 const loader = new GLTFLoader(); loader.setCrossOrigin('anonymous');
 let gltf=null;
-try { gltf = await loader.loadAsync(cfg.model.url); }
-catch(e) { toast('GLB laden fehlgeschlagen'); console.warn(e); }
+try {
+  if (!cfg.model?.url) throw new Error('model.url fehlt in der config');
+  gltf = await loader.loadAsync(cfg.model.url);
+} catch(e) {
+  toast('GLB laden fehlgeschlagen');
+  console.warn(e);
+}
 const root = gltf?.scene || new THREE.Group();
 root.traverse(o=>{ if(o.isMesh){ if(o.material?.map) o.material.map.colorSpace = THREE.SRGBColorSpace; }});
 root.scale.setScalar(cfg.model.scale||1); root.rotation.y = cfg.model.rotateY||0; scene.add(root);
