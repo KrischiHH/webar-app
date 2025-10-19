@@ -9,7 +9,9 @@
   html,body{height:100%;margin:0;background:var(--bg);color:var(--text);font:16px/1.4 system-ui,Segoe UI,Inter,Roboto,Arial}
   #app{position:fixed;inset:0}
   canvas{display:block;width:100%;height:100%}
-  .overlay{position:fixed;inset:0;display:grid;place-items:center;padding:24px;background:linear-gradient(180deg, rgba(14,17,22,.9), rgba(14,17,22,.96))}
+  /* Kamera-Preview für Overlay (optional) */
+  #camPreview{position:fixed;inset:0;object-fit:cover;z-index:0;display:none}
+  .overlay{position:fixed;inset:0;display:grid;place-items:center;padding:24px;background:linear-gradient(180deg, rgba(14,17,22,.9), rgba(14,17,22,.96));z-index:2}
   .card{width:min(880px,92vw);border:1px solid var(--border);border-radius:20px;overflow:hidden;background:linear-gradient(180deg,#0b1220,#0e1422);box-shadow:0 12px 40px rgba(0,0,0,.4);display:grid;grid-template-columns:320px 1fr}
   .poster{background:#0a1220;min-height:260px}
   .poster img{width:100%;height:100%;object-fit:cover;display:block}
@@ -19,9 +21,9 @@
   p{color:#cbd5e1;margin:.2rem 0 .8rem}
   .row{display:flex;gap:12px;align-items:center;flex-wrap:wrap;margin-top:.6rem}
   .btn{cursor:pointer;border:1px solid var(--border);background:linear-gradient(180deg,#1a2337,#162033);color:var(--text);padding:10px 14px;border-radius:12px;font-weight:700}
-  .hud{position:fixed;left:50%;transform:translateX(-50%);bottom:16px;display:flex;gap:10px;background:rgba(14,17,22,.6);border:1px solid var(--border);border-radius:999px;padding:8px;backdrop-filter: blur(6px)}
+  .hud{position:fixed;left:50%;transform:translateX(-50%);bottom:16px;display:flex;gap:10px;background:rgba(14,17,22,.6);border:1px solid var(--border);border-radius:999px;padding:8px;backdrop-filter: blur(6px);z-index:1}
   .hud button{all:unset;cursor:pointer;padding:8px 12px;border-radius:10px}
-  .toast{position:fixed;top:12px;right:12px;background:#111828;border:1px solid #24314a;color:#dbe1f1;padding:8px 12px;border-radius:10px;font-size:13px;box-shadow:0 8px 24px rgba(0,0,0,.25)}
+  .toast{position:fixed;top:12px;right:12px;background:#111828;border:1px solid #24314a;color:#dbe1f1;padding:8px 12px;border-radius:10px;font-size:13px;box-shadow:0 8px 24px rgba(0,0,0,.25);z-index:3}
   @media (max-width:860px){ .card{grid-template-columns:1fr} .poster{max-height:40vh} }
 </style>
 <script type="importmap">
@@ -34,10 +36,13 @@
 </script>
 </head>
 <body>
+<!-- optional: Kamera hinter Overlay -->
+<video id="camPreview" autoplay muted playsinline></video>
+
 <div id="app"></div>
 
 <!-- Willkommen -->
-<div id="welcome" class="overlay" hidden>
+<div id="welcome" class="overlay" style="display:grid">
   <div class="card">
     <div class="poster"><img id="welcomePoster" alt="Poster"></div>
     <div class="body">
@@ -45,15 +50,16 @@
       <h1 id="welcomeTitle">Willkommen</h1>
       <p id="welcomeDesc">Diese Szene enthält Animation und ggf. Audio. Klicke auf OK, um zu starten.</p>
       <div class="row">
-        <button id="welcomeStart" class="btn">OK</button>
+        <!-- Fallback: onclick ruft __start auf, falls Listener nicht registriert wäre -->
+        <button id="welcomeStart" class="btn" onclick="window.__start && window.__start()">OK</button>
         <span class="muted" id="welcomeHint" style="color:#9fb3d9;font-size:13px">Audio startet ggf. nach Klick (Autoplay-Policy)</span>
       </div>
     </div>
   </div>
 </div>
 
-<!-- HUD -->
-<div id="hud" class="hud" hidden>
+<!-- HUD (standardmäßig unsichtbar; erst nach OK & wenn ui.showHud===true) -->
+<div id="hud" class="hud" style="display:none">
   <button id="btnPlay" title="Play/Pause">▶︎/⏸</button>
   <button id="btnReplay" title="Neu starten">↻</button>
   <button id="btnSound" title="Ton an/aus">🔊</button>
@@ -79,8 +85,10 @@ const hud = $('#hud'),
       btnPlay  = $('#btnPlay'),
       btnReplay= $('#btnReplay'),
       btnSound = $('#btnSound');
+const camPreview = $('#camPreview');
 
 function toast(m){ const d=document.createElement('div'); d.className='toast'; d.textContent=m; toasts.appendChild(d); setTimeout(()=>d.remove(),2600); }
+const show = (el, on)=>{ el && (el.style.display = on ? '' : 'none'); };
 
 // ── Query / Config URL ─────────────────────────────────────────────────────────
 const qs = new URLSearchParams(location.search);
@@ -117,29 +125,40 @@ const audioLoader = new THREE.AudioLoader();
 const clock = new THREE.Clock();
 let mixer=null, clip=null, action=null, playing=false, playCount=0;
 let cfg = null, gltf=null;
-
-// ── Early binding: OK sofort wirksam, „Klick vorm Laden“ merken ───────────────
-let startClicked = false;
-let pendingOnClickAnim = false;
 let audioReady = false;
 let muted = false;
 let baseVolume = 0.85;
 
-function earlyStart(){
+// Start-Flags
+let startClicked = false;
+let wantStartAnim = false;        // Autostart gewünscht, aber evtl. noch nicht bereit
+let deferredClick = false;        // „onClick“ vor Asset-Ready geklickt
+
+// Public Start (auch inline onclick nutzbar)
+window.__start = function(){
   startClicked = true;
   try { listener?.context?.resume?.(); } catch {}
-  welcome.hidden = true;
-  hud.hidden = false;
-}
-wStart.addEventListener('click', earlyStart);
-addEventListener('keydown', e=>{
-  if (!welcome.hidden && (e.key === 'Enter' || e.key === ' ')){ e.preventDefault(); earlyStart(); }
+  // HUD nur, wenn in Szene gewünscht
+  if (!cfg || cfg?.ui?.showHud !== true) { show(hud,false); } else { show(hud,true); }
+  show(welcome,false);
+  if (cfg?.audio?.autoplay === 'auto') playSound();
+  if (cfg?.animation?.start === 'onStart') {
+    if (action) playAnim(true); else wantStartAnim = true;
+  }
+};
+
+// „Tap irgendwo auf Overlay“ kann Kamera-Vorschau starten, ohne Overlay zu schließen
+welcome.addEventListener('pointerdown', (e)=>{
+  if (e.target !== wStart && cfg?.ui?.overlayBackground === 'camera') startCameraPreview();
 });
 
-// Canvas-Klick vorm Laden puffern (für start:'onClick')
+// Canvas-Klick für „onClick“ erst nach OK möglich
 renderer.domElement.addEventListener('pointerdown', ()=>{
-  if (!welcome.hidden && !startClicked) return; // erst nach OK
-  pendingOnClickAnim = true;
+  if (!startClicked) return;
+  if (cfg?.animation?.start === 'onClick'){
+    if (action) playAnim(true);
+    else deferredClick = true;
+  }
 });
 
 // ── Controls ──────────────────────────────────────────────────────────────────
@@ -179,31 +198,42 @@ btnPlay.addEventListener('click', ()=>{ if (!action) return; playing ? pauseAnim
 btnReplay.addEventListener('click', ()=>{ if (!action) return; playAnim(true); });
 btnSound.addEventListener('click', toggleSound);
 
+// Kamera-Vorschau (nur fürs Overlay, keine AR)
+async function startCameraPreview(){
+  if (camPreview.dataset.on === '1') return;
+  try{
+    const s = await navigator.mediaDevices.getUserMedia({ video:{ facingMode:'environment' }, audio:false });
+    camPreview.srcObject = s;
+    camPreview.dataset.on = '1';
+    show(camPreview, true);
+  }catch{ /* ignorieren */ }
+}
+
 // ── Laden & Anwenden der Config ───────────────────────────────────────────────
 function deepMerge(a,b){ for(const k in b){ if(b[k] && typeof b[k]==='object' && !Array.isArray(b[k])) a[k]=deepMerge(a[k]||{},b[k]); else a[k]=b[k]; } return a; }
 const DEFAULTS = {
-  ui:{ showGround:true, autocenter:true, welcome:{ eyebrow:'ARea – Szene', title:'Willkommen', desc:'Klicke auf OK, um zu starten.', cta:'OK', poster:'' } },
+  ui:{ showGround:true, autocenter:true, showHud:false, overlayBackground:'poster',
+       welcome:{ eyebrow:'ARea – Szene', title:'Willkommen', desc:'Klicke auf OK, um zu starten.', cta:'OK', poster:'' } },
   camera:{ fov:50, near:.1, far:100, start:[2.5,1.6,3.6], lookAt:[0,1,0] },
   model:{ url:'', scale:1, rotateY:0 },
   animation:{ enabled:true, clipName:null, start:'onStart', loop:false, iterations:1, clampWhenFinished:true, crossfade:.25, timeScale:1 },
   audio:{ url:'', autoplay:'withAnimation', loop:true, volume:.85 },
   triggers:{ buttonLabel:'Animation abspielen', clickAnywhere:false }
 };
-
 function resolveRel(u, baseUrl){ if(!u) return u; try{ return new URL(u, baseUrl).href; }catch{ return u; } }
 
 (async()=>{
+  // Config laden
   try{
     const r = await fetch(configURL, { mode:'cors', cache:'no-cache' });
-    if(!r.ok) throw new Error(r.status+' '+r.statusText);
     const j = await r.json();
     cfg = deepMerge(structuredClone(DEFAULTS), j);
   }catch(e){
-    toast('Config konnte nicht geladen werden – Defaults genutzt.');
+    toast('Config konnte nicht geladen – Defaults genutzt.');
     cfg = structuredClone(DEFAULTS);
   }
 
-  // Absolute URLs ableiten
+  // Abs. URLs
   if (cfg.model?.url) cfg.model.url = resolveRel(cfg.model.url, configURL);
   if (cfg.audio?.url) cfg.audio.url = resolveRel(cfg.audio.url, configURL);
   if (cfg.ui?.welcome?.poster) cfg.ui.welcome.poster = resolveRel(cfg.ui.welcome.poster, configURL);
@@ -215,7 +245,14 @@ function resolveRel(u, baseUrl){ if(!u) return u; try{ return new URL(u, baseUrl
   wDesc.textContent    = cfg.ui?.welcome?.desc    ?? DEFAULTS.ui.welcome.desc;
   wStart.textContent   = (cfg.ui?.welcome?.cta || 'OK');
   if (cfg.ui?.welcome?.poster){ poster.src = cfg.ui.welcome.poster; } else { document.querySelector('.poster').style.display='none'; }
-  welcome.hidden = !startClicked; // falls OK schon gedrückt
+  // HUD nach Vorgabe
+  show(hud, false); // erst nach OK
+  // Kamera-Preview optional
+  if (cfg.ui?.overlayBackground === 'camera'){
+    // startet nach erstem Tap (Overlay) oder beim OK
+    welcome.addEventListener('pointerdown', (e)=>{ if(e.target!==wStart) startCameraPreview(); }, { once:true });
+    wStart.addEventListener('pointerdown', ()=> startCameraPreview(), { once:true });
+  }
 
   // Kamera/Controls/Scene
   if (cfg.camera){
@@ -256,7 +293,6 @@ function resolveRel(u, baseUrl){ if(!u) return u; try{ return new URL(u, baseUrl
     action.timeScale = cfg.animation.timeScale ?? 1;
     if (cfg.animation.loop){ action.setLoop(THREE.LoopRepeat, Infinity); }
     else { action.setLoop(THREE.LoopOnce, 0); }
-
     mixer.addEventListener('finished', ()=>{
       if(cfg.animation.loop) return;
       if(cfg.animation.iterations && Number.isFinite(cfg.animation.iterations)){
@@ -265,13 +301,9 @@ function resolveRel(u, baseUrl){ if(!u) return u; try{ return new URL(u, baseUrl
         else { playing=false; }
       }
     });
-
-    // Jetzt ggf. „nachstarten“
-    if (startClicked && cfg.animation?.start === 'onStart') { playAnim(true); }
-    if (pendingOnClickAnim && cfg.animation?.start === 'onClick' && action) {
-      playAnim(true);
-      pendingOnClickAnim = false;
-    }
+    // Nachstart
+    if (wantStartAnim) { playAnim(true); wantStartAnim=false; }
+    if (deferredClick) { playAnim(true); deferredClick=false; }
   }
 
   // Audio laden
@@ -280,11 +312,9 @@ function resolveRel(u, baseUrl){ if(!u) return u; try{ return new URL(u, baseUrl
       await new Promise((resolve,reject)=>
         audioLoader.load(cfg.audio.url, (buf)=>{ audio.setBuffer(buf); audio.setLoop(!!cfg.audio.loop); audio.setVolume(baseVolume); audioReady=true; resolve(); }, undefined, reject)
       );
-      // Falls OK bereits geklickt und Audio auf „auto“
       if (startClicked && cfg.audio?.autoplay === 'auto') playSound();
     }catch(e){ console.warn('Audio load fail', e); }
   }
-
 })();
 
 // ── Loop / Resize ─────────────────────────────────────────────────────────────
