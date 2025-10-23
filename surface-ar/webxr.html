@@ -39,6 +39,14 @@ const showErr = (m)=>{ const el=document.getElementById('err'); el.textContent=m
 
 /* ========= Param-Normalisierung ========= */
 const qs = new URLSearchParams(location.search);
+  // --- Force-Param: niemals auf Native umleiten, wenn ?force=webxr ---
+const FORCE = (qs.get('force') || '').toLowerCase();
+if (FORCE === 'webxr') {
+  window.__FORCE_MODE = 'webxr';
+  window.__NO_NATIVE_REDIRECT__ = true;   // falls irgendwo (global) Redirect-Logik existiert
+  // (optional) Badge aktualisieren:
+  try { document.getElementById('badge').textContent = 'WEBXR (forced)'; } catch {}
+}
 let sceneParam = (qs.get('scene') || qs.get('src') || '').trim();
 const workerBase = (qs.get('base') || 'https://area-publish.area-webar.workers.dev').replace(/\/$/, '');
 const overrideGlb = (qs.get('glb') || '').trim();
