@@ -3,16 +3,17 @@
 <head>
 <meta charset="utf-8"/>
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover"/>
-<title>ARea – Scene Viewer</title>
+<title>ARea – Scene Viewer (AR)</title>
 <link rel="icon" href="data:,">
 <style>
   :root{ --bg:#0e1116; --panel:#111828; --panel2:#192339; --text:#e9ecf5; --muted:#9fb3d9; --border:#24314a; }
   html,body{height:100%;margin:0;background:var(--bg);color:var(--text);font:16px/1.4 system-ui,Segoe UI,Inter,Roboto,Arial}
   #app{position:fixed;inset:0}
   canvas{display:block;width:100%;height:100%}
-  /* Kamera-Preview nur fürs Overlay; AR nutzt echten XR-Feed */
+  /* Kamera-Preview nur fürs Overlay; AR nutzt XR-Feed */
   #camPreview{position:fixed;inset:0;object-fit:cover;z-index:0;display:none}
-  .overlay{position:fixed;inset:0;display:grid;place-items:center;padding:24px;background:linear-gradient(180deg, rgba(14,17,22,.9), rgba(14,17,22,.96));z-index:2}
+
+  .overlay{position:fixed;inset:0;display:grid;place-items:center;padding:24px;background:linear-gradient(180deg, rgba(14,17,22,.9), rgba(14,17,22,.96));z-index:4}
   .card{width:min(880px,92vw);border:1px solid var(--border);border-radius:20px;overflow:hidden;background:linear-gradient(180deg,#0b1220,#0e1422);box-shadow:0 12px 40px rgba(0,0,0,.4);display:grid;grid-template-columns:320px 1fr}
   .poster{background:#0a1220;min-height:260px}
   .poster img{width:100%;height:100%;object-fit:cover;display:block}
@@ -24,8 +25,31 @@
   .btn{cursor:pointer;border:1px solid var(--border);background:linear-gradient(180deg,#1a2337,#162033);color:var(--text);padding:10px 14px;border-radius:12px;font-weight:700}
   .hud{position:fixed;left:50%;transform:translateX(-50%);bottom:16px;display:flex;gap:10px;background:rgba(14,17,22,.6);border:1px solid var(--border);border-radius:999px;padding:8px;backdrop-filter: blur(6px);z-index:3}
   .hud button{all:unset;cursor:pointer;padding:8px 12px;border-radius:10px}
-  .toast{position:fixed;top:12px;right:12px;background:#111828;border:1px solid #24314a;color:#dbe1f1;padding:8px 12px;border-radius:10px;font-size:13px;box-shadow:0 8px 24px rgba(0,0,0,.25);z-index:4}
+  .toast{position:fixed;top:12px;right:12px;background:#111828;border:1px solid #24314a;color:#dbe1f1;padding:8px 12px;border-radius:10px;font-size:13px;box-shadow:0 8px 24px rgba(0,0,0,.25);z-index:5}
   @media (max-width:860px){ .card{grid-template-columns:1fr} .poster{max-height:40vh} }
+
+  /* === Loader (dein Theme, leicht angepasst) === */
+  #loading.overlay{ z-index: 4; }
+  .loader { width: 110px; height: 56px; position: relative; }
+  .loader-text { position: absolute; top: -18px; left: 0; right: 0; text-align: left;
+    color: #C8B6FF; animation: text_713 3.5s ease both infinite; font-size:.9rem; letter-spacing:1px; }
+  .load { background-color:#9A79FF; border-radius:50px; display:block; height:16px; width:16px; bottom:0; position:absolute; transform:translateX(64px); animation: loading_713 3.5s ease both infinite; }
+  .load::before { position:absolute; content:""; width:100%; height:100%; background-color:#D1C2FF; border-radius:inherit; animation: loading2_713 3.5s ease both infinite; }
+  @keyframes text_713 {
+    0% { letter-spacing:1px; transform:translateX(0) } 40% { letter-spacing:2px; transform:translateX(26px) }
+    80% { letter-spacing:1px; transform:translateX(32px) } 90% { letter-spacing:2px; transform:translateX(0) }
+    100% { letter-spacing:1px; transform:translateX(0) }
+  }
+  @keyframes loading_713 {
+    0% { width:16px; transform:translateX(0) } 40% { width:100%; transform:translateX(0) }
+    80% { width:16px; transform:translateX(64px) } 90% { width:100%; transform:translateX(0) }
+    100% { width:16px; transform:translateX(0) }
+  }
+  @keyframes loading2_713 {
+    0% { transform:translateX(0); width:16px } 40% { transform:translateX(0); width:80% }
+    80% { width:100%; transform:translateX(0) } 90% { width:80%; transform:translateX(15px) }
+    100% { transform:translateX(0); width:16px }
+  }
 </style>
 <script type="importmap">
 {
@@ -40,7 +64,7 @@
 <video id="camPreview" autoplay muted playsinline></video>
 <div id="app"></div>
 
-<!-- Willkommen -->
+<!-- Willkommen / Poster -->
 <div id="welcome" class="overlay" style="display:grid">
   <div class="card">
     <div class="poster"><img id="welcomePoster" alt="Poster"></div>
@@ -52,6 +76,16 @@
         <button id="welcomeStart" class="btn" onclick="window.__start && window.__start()">OK</button>
         <span class="muted" id="welcomeHint" style="color:#9fb3d9;font-size:13px">Autostart kann Klick erfordern (Autoplay-Policy)</span>
       </div>
+    </div>
+  </div>
+</div>
+
+<!-- Loading Overlay -->
+<div id="loading" class="overlay" style="display:none">
+  <div class="card" style="grid-template-columns:1fr; place-items:center; padding:24px">
+    <div class="loader">
+      <div class="loader-text" id="loadingText">Erlebnis wird geladen …</div>
+      <span class="load"></span>
     </div>
   </div>
 </div>
@@ -85,9 +119,11 @@ const hud = $('#hud'),
       btnReplay= $('#btnReplay'),
       btnSound = $('#btnSound');
 const camPreview = $('#camPreview');
+const loadingEl = $('#loading'), loadingText = $('#loadingText');
 
 function toast(m){ const d=document.createElement('div'); d.className='toast'; d.textContent=m; toasts.appendChild(d); setTimeout(()=>d.remove(),2600); }
 const show = (el, on)=>{ el && (el.style.display = on ? '' : 'none'); };
+const setLoading = (s, msg)=>{ if (msg) loadingText.textContent = msg; show(loadingEl, s); };
 
 // ── Query / Config URL ─────────────────────────────────────────────────────────
 const qs = new URLSearchParams(location.search);
@@ -102,7 +138,7 @@ const renderer = new THREE.WebGLRenderer({ antialias:true, powerPreference:'high
 renderer.setPixelRatio(Math.min(devicePixelRatio,2));
 renderer.outputColorSpace = THREE.SRGBColorSpace;
 renderer.toneMapping = THREE.ACESFilmicToneMapping;
-renderer.setClearColor(0x000000, 0); // transparenter Hintergrund für XR-Kamera
+renderer.setClearColor(0x000000, 0); // transparent für XR-Kamera
 renderer.setSize(innerWidth, innerHeight);
 app.appendChild(renderer.domElement);
 
@@ -113,7 +149,7 @@ const controls = new OrbitControls(camera, renderer.domElement); controls.enable
 const hemi = new THREE.HemisphereLight(0xffffff, 0x334455, 0.9); scene.add(hemi);
 const dir  = new THREE.DirectionalLight(0xffffff, 1.2); dir.position.set(4,6,3); scene.add(dir);
 
-// AR-Reticle
+// AR Reticle
 let reticle=null;
 function makeReticle(){
   const geo = new THREE.RingGeometry(0.07, 0.08, 32).rotateX(-Math.PI/2);
@@ -126,10 +162,11 @@ function makeReticle(){
 const listener = new THREE.AudioListener(); camera.add(listener);
 const audio = new THREE.Audio(listener);
 const audioLoader = new THREE.AudioLoader();
+let allowAudio = false; // wird beim OK-Tap gesetzt
 
 // Animation/State
 const clock = new THREE.Clock();
-let mixer=null, clip=null, action=null, playing=false, playCount=0;
+let mixer=null, actions=[], playing=false;
 let cfg = null, gltf=null, root=null;
 let audioReady = false;
 let muted = false;
@@ -137,9 +174,7 @@ let baseVolume = 0.85;
 
 let startClicked = false;
 let wantStartAnim = false;
-let deferredClick = false;
 
-// WebXR AR state
 let xrSession = null, hitTestSource = null, hitTestRequested = false, placed = false;
 let pendingPlacementMatrix = null;
 
@@ -151,17 +186,18 @@ const DEFAULTS = {
     showGround:false, autocenter:true,
     welcome:{ eyebrow:'ARea – Szene', title:'Willkommen', desc:'Tippe auf OK, um AR zu starten.', cta:'OK', poster:'' },
     controls:{ showPlay:true, showMute:true },
-    overlayBackground:'poster' // 'poster' | 'camera'
+    overlayBackground:'poster'
   },
   camera:{ fov:50, near:.01, far:100, start:[2.5,1.6,3.6], lookAt:[0,1,0] },
-  model:{ url:'', scale:1, rotateY:0 },
-  animation:{ enabled:true, clipName:null, start:'onStart', loop:false, iterations:1, clampWhenFinished:true, crossfade:.25, timeScale:1 },
+  model:{ url:'', scale:1, rotateY:0, autoFit:true, maxDim:1.2 },
+  animation:{ enabled:true, clipName:'*', start:'onStart', loop:true, iterations:Infinity, clampWhenFinished:true, crossfade:.2, timeScale:1 },
   audio:{ url:'', autoplay:'withAnimation', loop:true, volume:.85 }
 };
 function resolveRel(u, baseUrl){ if(!u) return u; try{ return new URL(u, baseUrl).href; }catch{ return u; } }
 
 function updateHUD(){
-  const showPlay = !!cfg?.ui?.controls?.showPlay && !!action;
+  const hasAnim = actions.length>0;
+  const showPlay = !!cfg?.ui?.controls?.showPlay && hasAnim;
   const showMute = !!cfg?.ui?.controls?.showMute && !!cfg?.audio?.url;
   btnPlay.style.display   = showPlay ? '' : 'none';
   btnReplay.style.display = showPlay ? '' : 'none';
@@ -169,24 +205,71 @@ function updateHUD(){
   show(hud, (showPlay || showMute));
 }
 
-// ── Config laden & anwenden ───────────────────────────────────────────────────
+function playAnim(reset=false){
+  if (!actions.length) return;
+  actions.forEach(a=>{
+    if (reset) a.reset();
+    a.enabled = true;
+    a.clampWhenFinished = !!cfg.animation.clampWhenFinished;
+    a.timeScale = cfg.animation.timeScale ?? 1;
+    a.fadeIn(cfg.animation.crossfade || 0).play();
+    a.paused = false;
+  });
+  playing = true;
+  maybePlayAudio(); // startet Audio, wenn Modus 'withAnimation'
+}
+function pauseAnim(){
+  if (!actions.length) return;
+  actions.forEach(a=> a.paused = true);
+  playing = false;
+  if (cfg.audio?.autoplay === 'withAnimation' && audioReady && audio.isPlaying) audio.stop();
+}
+btnPlay.addEventListener('click', ()=>{ if (!actions.length) return; playing ? pauseAnim() : playAnim(); });
+btnReplay.addEventListener('click', ()=>{ if (!actions.length) return; playAnim(true); });
+
+function setMuted(on){
+  muted = !!on;
+  if (audioReady) audio.setVolume(muted ? 0 : baseVolume);
+  btnSound.textContent = muted ? '🔈' : '🔊';
+}
+function toggleSound(){ if (!audioReady) return; setMuted(!muted); }
+btnSound.addEventListener('click', toggleSound);
+
+function maybePlayAudio(){
+  if (!allowAudio || !audioReady) return;
+  if (cfg.audio?.autoplay === 'auto' || (cfg.audio?.autoplay === 'withAnimation' && playing)) {
+    listener.context.resume?.();
+    setMuted(false);
+    if (!audio.isPlaying) audio.play();
+  }
+}
+
+// GLTF mit Progress laden (für Lade-Overlay)
+function loadGLTFWithProgress(url, onProgress){
+  const loader = new GLTFLoader(); loader.setCrossOrigin('anonymous');
+  const draco  = new DRACOLoader(); draco.setDecoderPath('https://www.gstatic.com/draco/v1/decoders/'); loader.setDRACOLoader(draco);
+  return new Promise((resolve,reject)=>{
+    loader.load(url, resolve, (e)=>{
+      if (e.total) onProgress?.(e.loaded / e.total);
+    }, reject);
+  });
+}
+
+// ── Config laden & vorbereiten (Preload) ──────────────────────────────────────
 (async()=>{
   try{
     const r = await fetch(configURL, { mode:'cors', cache:'no-cache' });
     const j = await r.json();
     cfg = deepMerge(structuredClone(DEFAULTS), j);
 
-    // URLs auflösen
     if (cfg.model?.url)  cfg.model.url  = resolveRel(cfg.model.url,  configURL);
     if (!cfg.audio?.url && j?.audio?.src) cfg.audio.url = resolveRel(j.audio.src, configURL);
     if (cfg.audio?.url)  cfg.audio.url  = resolveRel(cfg.audio.url,  configURL);
 
-    // Poster sammeln: ui.welcome.poster → target.previewUrl → poster.jpg
     let posterUrl = cfg.ui?.welcome?.poster || j?.target?.previewUrl || j?.poster;
     if (posterUrl) posterUrl = resolveRel(posterUrl, configURL);
     else if (sceneId) posterUrl = `${workerBase}/scenes/${encodeURIComponent(sceneId)}/poster.jpg`;
 
-    // Welcome befüllen
     document.title = (cfg.ui?.welcome?.title || 'ARea – Scene Viewer');
     wEyebrow.textContent = cfg.ui?.welcome?.eyebrow ?? DEFAULTS.ui.welcome.eyebrow;
     wTitle.textContent   = cfg.ui?.welcome?.title   ?? DEFAULTS.ui.welcome.title;
@@ -198,13 +281,12 @@ function updateHUD(){
     } else {
       document.querySelector('.poster').style.display='none';
     }
-
   }catch(e){
     toast('Config konnte nicht geladen – Defaults genutzt.');
     cfg = structuredClone(DEFAULTS);
   }
 
-  // Kamera/Controls/Scene (Fallback-Viewer Setup; AR überschreibt Hintergrund)
+  // Kamera (Fallback)
   camera.fov = cfg.camera.fov ?? camera.fov;
   camera.near= cfg.camera.near ?? camera.near;
   camera.far = cfg.camera.far ?? camera.far;
@@ -214,54 +296,51 @@ function updateHUD(){
 
   baseVolume = cfg.audio?.volume ?? 0.85;
 
-  // GLB laden (mit Draco)
-  const loader = new GLTFLoader(); loader.setCrossOrigin('anonymous');
-  const draco  = new DRACOLoader(); draco.setDecoderPath('https://www.gstatic.com/draco/v1/decoders/'); loader.setDRACOLoader(draco);
-  try { gltf = await loader.loadAsync(cfg.model.url); }
-  catch(e) { toast('GLB laden fehlgeschlagen'); console.warn(e); }
+  // Preload: Modell + Audio (mit Lade-Overlay-Text im Welcome-Stadium optional)
+  let modelProgress = 0;
+  const updateModelMsg = ()=> setLoading(true, `Erlebnis wird geladen … ${Math.round(modelProgress*100)}%`);
+
+  // Wir preladen still; Loader zeigen wir erst nach OK – aber wir tracken Progress schon
+  try {
+    gltf = await loadGLTFWithProgress(cfg.model.url, p=>{ modelProgress = p; });
+  } catch(e) { toast('GLB laden fehlgeschlagen'); console.warn(e); }
 
   root = gltf?.scene || new THREE.Group();
   root.traverse(o=>{ if(o.isMesh){ if(o.material?.map) o.material.map.colorSpace = THREE.SRGBColorSpace; }});
-  root.scale.setScalar(cfg.model.scale||1);
+
+  // Auto-Fit, falls Modell sehr groß/klein
+  try{
+    const box = new THREE.Box3().setFromObject(root);
+    const size = new THREE.Vector3(); box.getSize(size);
+    const maxDim = Math.max(size.x,size.y,size.z) || 1;
+    const targetMax = cfg.model?.maxDim ?? 1.2;
+    const scaleFit = cfg.model?.autoFit ? (targetMax / maxDim) : 1;
+    const baseScale = (cfg.model?.scale ?? 1) * scaleFit;
+    root.scale.setScalar(baseScale);
+  }catch{}
+
   root.rotation.y = cfg.model.rotateY||0;
   scene.add(root);
 
-  // Auto-Center (für Fallback; in AR wird positioniert)
-  if (cfg.ui?.autocenter && root){
-    const box = new THREE.Box3().setFromObject(root);
-    const size = new THREE.Vector3(); box.getSize(size);
-    const center = new THREE.Vector3(); box.getCenter(center);
-    root.position.x += -center.x; root.position.z += -center.z; root.position.y += -box.min.y;
-    const radius = Math.max(size.x,size.y,size.z)*0.6; const idealZ = radius/Math.tan((camera.fov*Math.PI/180)/2);
-    camera.position.set(idealZ*0.8, radius*0.8, idealZ*1.1); controls.target.set(0, size.y*0.5, 0);
-  }
-
-  // Animation
+  // Animationen: '*' = alle Clips starten/playbar machen
   if (gltf?.animations?.length && cfg.animation.enabled){
-    console.debug('GLTF animations:', gltf.animations.map(a=>a.name));
     mixer = new THREE.AnimationMixer(root);
-    clip = cfg.animation.clipName
-      ? THREE.AnimationClip.findByName(gltf.animations, cfg.animation.clipName) || gltf.animations[0]
-      : gltf.animations[0];
-    action = mixer.clipAction(clip);
-    action.clampWhenFinished = !!cfg.animation.clampWhenFinished;
-    action.timeScale = cfg.animation.timeScale ?? 1;
-    if (cfg.animation.loop){ action.setLoop(THREE.LoopRepeat, Infinity); }
-    else { action.setLoop(THREE.LoopOnce, 0); }
-    mixer.addEventListener('finished', ()=>{
-      if(cfg.animation.loop) return;
-      if(cfg.animation.iterations && Number.isFinite(cfg.animation.iterations)){
-        playCount++;
-        if (playCount < cfg.animation.iterations){ action.reset(); action.play(); }
-        else { playing=false; }
-      }
+    const clips = gltf.animations;
+    const useAll = !cfg.animation.clipName || cfg.animation.clipName === '*';
+    const selClips = useAll ? clips : [ THREE.AnimationClip.findByName(clips, cfg.animation.clipName) || clips[0] ];
+    actions = selClips.map(c => {
+      const a = mixer.clipAction(c);
+      a.setLoop(cfg.animation.loop ? THREE.LoopRepeat : THREE.LoopOnce, cfg.animation.iterations ?? Infinity);
+      a.clampWhenFinished = !!cfg.animation.clampWhenFinished;
+      a.timeScale = cfg.animation.timeScale ?? 1;
+      return a;
     });
+    console.debug('GLTF animations:', clips.map(a=>a.name));
   } else {
-    // keine Clips → Play-Buttons verbergen
-    cfg.ui.controls.showPlay = false;
+    actions = [];
   }
 
-  // Audio
+  // Audio-Preload
   if (cfg.audio?.url){
     try{
       await new Promise((resolve,reject)=>
@@ -270,12 +349,7 @@ function updateHUD(){
     }catch(e){ console.warn('Audio load fail', e); }
   }
 
-  // Falls Benutzer schon auf OK tippte bevor Assets fertig waren
-  if (startClicked){
-    updateHUD();
-    if (cfg?.animation?.start === 'onStart' && action) playAnim(true);
-    if (cfg?.audio?.autoplay === 'auto') playSound();
-  }
+  updateHUD(); // erst nach Preload wissen wir, ob Animations-Buttons Sinn machen
 })();
 
 // ── AR Start / Hit-Test / Placement ───────────────────────────────────────────
@@ -285,8 +359,9 @@ async function canStartAR(){
 }
 
 async function startAR(){
-  const supported = await canStartAR();
-  if (!supported) return false;
+  if (!await canStartAR()) return false;
+
+  setLoading(true, 'Initialisiere AR …');
 
   xrSession = await navigator.xr.requestSession('immersive-ar', {
     requiredFeatures:['hit-test','local-floor'],
@@ -301,7 +376,7 @@ async function startAR(){
   if (!reticle){ reticle = makeReticle(); scene.add(reticle); }
   hitTestRequested = false; placed = false; pendingPlacementMatrix = null;
 
-  // Tap-Place (falls Autoplace deaktiviert)
+  // Tap-Place (falls autoplace false)
   const controller = renderer.xr.getController(0);
   controller.addEventListener('select', ()=>{
     if (reticle && reticle.visible && !placed) placeModelFromMatrix(reticle.matrix);
@@ -310,6 +385,7 @@ async function startAR(){
 
   xrSession.addEventListener('end', ()=>{
     hitTestSource = null; hitTestRequested = false; xrSession = null;
+    setLoading(false);
   });
 
   return true;
@@ -321,35 +397,36 @@ function placeModelFromMatrix(mat4){
   root.position.setFromMatrixPosition(mat4);
   placed = true;
 
-  if (cfg?.animation?.start === 'onStart'){
-    if (action) playAnim(true); else wantStartAnim = true;
-  }
-  if (cfg?.audio?.autoplay === 'auto') playSound();
+  // Start Animation/Audio erst NACH Placement (gewünschtes Verhalten)
+  if (cfg?.animation?.start === 'onStart') playAnim(true);
+  if (cfg?.audio) maybePlayAudio();
+  setLoading(false);
 }
 
 // ── Public Start (OK-Button) ──────────────────────────────────────────────────
 window.__start = async function(){
   startClicked = true;
+  allowAudio = true; // Autoplay-Freigabe durch User-Tap
   try { listener?.context?.resume?.(); } catch {}
 
   updateHUD();
   show(welcome,false);
 
-  if (cfg?.ui?.overlayBackground === 'camera'){
-    // optional: Preview hinter Overlay laufen lassen
-    startCameraPreview();
-  }
+  if (cfg?.ui?.overlayBackground === 'camera'){ startCameraPreview(); }
+
+  // Zeige Loader-Overlay JETZT (nach Poster), bis AR + Platzierung ready
+  setLoading(true, 'Erlebnis wird geladen …');
 
   const arStarted = await startAR().catch(()=>false);
   if (!arStarted){
-    toast('WebXR-AR nicht verfügbar – zeige 3D ohne AR.');
-    // Fallback: Non-AR, ggf. Animation/Audio starten
-    if (cfg?.animation?.start === 'onStart' && action) playAnim(true);
-    if (cfg?.audio?.autoplay === 'auto') playSound();
+    // Fallback: kein AR → kein Hit-Test; wir verstecken Loader und starten ggf. direkt
+    setLoading(false);
+    if (cfg?.animation?.start === 'onStart') playAnim(true);
+    maybePlayAudio();
   }
 };
 
-// Overlay-Kamera (Preview, kein AR)
+// Optional: Overlay-Kamera (reiner Videostream, kein AR)
 welcome.addEventListener('pointerdown', (e)=>{
   if (e.target !== wStart && cfg?.ui?.overlayBackground === 'camera') startCameraPreview();
 });
@@ -359,37 +436,6 @@ function startCameraPreview(){
     .then(s=>{ camPreview.srcObject = s; camPreview.dataset.on='1'; show(camPreview, true); })
     .catch(()=>{});
 }
-
-// ── Controls ──────────────────────────────────────────────────────────────────
-function playAnim(reset=false){
-  if (!action) return;
-  if (reset){ action.reset(); playCount=0; }
-  action.enabled = true;
-  action.fadeIn(cfg.animation?.crossfade || 0).play();
-  action.paused = false;
-  playing = true;
-  if (cfg.audio?.autoplay === 'withAnimation' && audioReady && !audio.isPlaying) audio.play();
-}
-function pauseAnim(){
-  if (!action) return;
-  action.paused = true; playing = false;
-  if (cfg.audio?.autoplay === 'withAnimation' && audioReady && audio.isPlaying) audio.stop();
-}
-function setMuted(on){
-  muted = !!on;
-  if (audioReady) audio.setVolume(muted ? 0 : baseVolume);
-  btnSound.textContent = muted ? '🔈' : '🔊';
-}
-function toggleSound(){ if (!audioReady) return; setMuted(!muted); }
-function playSound(){
-  if (!audioReady) return;
-  listener.context.resume?.();
-  setMuted(false);
-  if (!audio.isPlaying) audio.play();
-}
-btnPlay.addEventListener('click', ()=>{ if (!action) return; playing ? pauseAnim() : playAnim(); });
-btnReplay.addEventListener('click', ()=>{ if (!action) return; playAnim(true); });
-btnSound.addEventListener('click', toggleSound);
 
 // ── Render / XR-HitTest Loop ─────────────────────────────────────────────────
 renderer.setAnimationLoop((t, frame)=>{
@@ -401,6 +447,8 @@ renderer.setAnimationLoop((t, frame)=>{
     const session  = renderer.xr.getSession();
 
     if (!hitTestRequested){
+      // Während wir auf Hit-Test-Quelle warten, zeige „Fläche suchen …“
+      setLoading(true, 'Suche Oberfläche …');
       session.requestReferenceSpace('viewer').then((viewerSpace)=>{
         session.requestHitTestSource({ space: viewerSpace }).then(src => { hitTestSource = src; });
       });
@@ -418,8 +466,11 @@ renderer.setAnimationLoop((t, frame)=>{
 
         if (!placed && (cfg?.meta?.autoplace ?? true)){
           placeModelFromMatrix(new THREE.Matrix4().fromArray(pose.transform.matrix));
+        } else {
+          // reticle sichtbar → Oberfläche gefunden
+          setLoading(false);
         }
-      } else if (reticle){ reticle.visible = false; }
+      } else if (reticle){ reticle.visible = false; setLoading(true, 'Suche Oberfläche …'); }
     }
   } else {
     controls.update();
