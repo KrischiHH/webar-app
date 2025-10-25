@@ -2,13 +2,15 @@
 <html lang="de">
 <head>
 <meta charset="utf-8"/>
-<meta name="viewport" content="width=device-width, initial-scale=1"/>
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover"/>
 <title>ARea – Scene Viewer</title>
+<link rel="icon" href="data:,">
 <style>
   :root{ --bg:#0e1116; --panel:#111828; --panel2:#192339; --text:#e9ecf5; --muted:#9fb3d9; --border:#24314a; }
   html,body{height:100%;margin:0;background:var(--bg);color:var(--text);font:16px/1.4 system-ui,Segoe UI,Inter,Roboto,Arial}
   #app{position:fixed;inset:0}
   canvas{display:block;width:100%;height:100%}
+  /* Kamera-Preview nur fürs Overlay; AR nutzt echten XR-Feed */
   #camPreview{position:fixed;inset:0;object-fit:cover;z-index:0;display:none}
   .overlay{position:fixed;inset:0;display:grid;place-items:center;padding:24px;background:linear-gradient(180deg, rgba(14,17,22,.9), rgba(14,17,22,.96));z-index:2}
   .card{width:min(880px,92vw);border:1px solid var(--border);border-radius:20px;overflow:hidden;background:linear-gradient(180deg,#0b1220,#0e1422);box-shadow:0 12px 40px rgba(0,0,0,.4);display:grid;grid-template-columns:320px 1fr}
@@ -20,9 +22,9 @@
   p{color:#cbd5e1;margin:.2rem 0 .8rem}
   .row{display:flex;gap:12px;align-items:center;flex-wrap:wrap;margin-top:.6rem}
   .btn{cursor:pointer;border:1px solid var(--border);background:linear-gradient(180deg,#1a2337,#162033);color:var(--text);padding:10px 14px;border-radius:12px;font-weight:700}
-  .hud{position:fixed;left:50%;transform:translateX(-50%);bottom:16px;display:flex;gap:10px;background:rgba(14,17,22,.6);border:1px solid var(--border);border-radius:999px;padding:8px;backdrop-filter: blur(6px);z-index:1}
+  .hud{position:fixed;left:50%;transform:translateX(-50%);bottom:16px;display:flex;gap:10px;background:rgba(14,17,22,.6);border:1px solid var(--border);border-radius:999px;padding:8px;backdrop-filter: blur(6px);z-index:3}
   .hud button{all:unset;cursor:pointer;padding:8px 12px;border-radius:10px}
-  .toast{position:fixed;top:12px;right:12px;background:#111828;border:1px solid #24314a;color:#dbe1f1;padding:8px 12px;border-radius:10px;font-size:13px;box-shadow:0 8px 24px rgba(0,0,0,.25);z-index:3}
+  .toast{position:fixed;top:12px;right:12px;background:#111828;border:1px solid #24314a;color:#dbe1f1;padding:8px 12px;border-radius:10px;font-size:13px;box-shadow:0 8px 24px rgba(0,0,0,.25);z-index:4}
   @media (max-width:860px){ .card{grid-template-columns:1fr} .poster{max-height:40vh} }
 </style>
 <script type="importmap">
@@ -45,10 +47,10 @@
     <div class="body">
       <div class="eyebrow" id="welcomeEyebrow">ARea – Szene</div>
       <h1 id="welcomeTitle">Willkommen</h1>
-      <p id="welcomeDesc">Diese Szene enthält Animation und ggf. Audio. Klicke auf OK, um zu starten.</p>
+      <p id="welcomeDesc">Diese Szene enthält Animation und ggf. Audio. Tippe auf OK, um AR zu starten.</p>
       <div class="row">
         <button id="welcomeStart" class="btn" onclick="window.__start && window.__start()">OK</button>
-        <span class="muted" id="welcomeHint" style="color:#9fb3d9;font-size:13px">Audio startet ggf. nach Klick (Autoplay-Policy)</span>
+        <span class="muted" id="welcomeHint" style="color:#9fb3d9;font-size:13px">Autostart kann Klick erfordern (Autoplay-Policy)</span>
       </div>
     </div>
   </div>
@@ -66,7 +68,8 @@
 <script type="module">
 import * as THREE from 'three';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
-import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
+import { GLTFLoader }  from 'three/addons/loaders/GLTFLoader.js';
+import { DRACOLoader } from 'three/addons/loaders/DRACOLoader.js';
 
 const $ = s => document.querySelector(s);
 const app   = $('#app');
@@ -95,29 +98,36 @@ const configURL = src || (sceneId ? `${workerBase}/scenes/${encodeURIComponent(s
 if (!configURL){ toast('Keine scene.json – ?scene=ID oder ?src=URL verwenden.'); }
 
 // ── THREE Setup ───────────────────────────────────────────────────────────────
-const renderer = new THREE.WebGLRenderer({ antialias:true, powerPreference:'high-performance' });
+const renderer = new THREE.WebGLRenderer({ antialias:true, powerPreference:'high-performance', alpha:true });
 renderer.setPixelRatio(Math.min(devicePixelRatio,2));
 renderer.outputColorSpace = THREE.SRGBColorSpace;
 renderer.toneMapping = THREE.ACESFilmicToneMapping;
+renderer.setClearColor(0x000000, 0); // transparenter Hintergrund für XR-Kamera
 renderer.setSize(innerWidth, innerHeight);
 app.appendChild(renderer.domElement);
 
-const scene = new THREE.Scene(); scene.background = new THREE.Color('#0b1020');
-const camera = new THREE.PerspectiveCamera(50, innerWidth/innerHeight, 0.1, 100); camera.position.set(2.5,1.6,3.6);
+const scene = new THREE.Scene();
+const camera = new THREE.PerspectiveCamera(50, innerWidth/innerHeight, 0.01, 100); camera.position.set(2.5,1.6,3.6);
 const controls = new OrbitControls(camera, renderer.domElement); controls.enableDamping=true; controls.target.set(0,1,0);
 
 const hemi = new THREE.HemisphereLight(0xffffff, 0x334455, 0.9); scene.add(hemi);
 const dir  = new THREE.DirectionalLight(0xffffff, 1.2); dir.position.set(4,6,3); scene.add(dir);
 
-const ground = new THREE.Mesh(new THREE.PlaneGeometry(40,40), new THREE.MeshStandardMaterial({ color:0x0d1323, roughness:.9, metalness:0 }));
-ground.rotation.x = -Math.PI/2; scene.add(ground);
+// AR-Reticle
+let reticle=null;
+function makeReticle(){
+  const geo = new THREE.RingGeometry(0.07, 0.08, 32).rotateX(-Math.PI/2);
+  const mat = new THREE.MeshBasicMaterial({ color:0x66ccff });
+  const m = new THREE.Mesh(geo, mat); m.matrixAutoUpdate=false; m.visible=false;
+  return m;
+}
 
 // Audio
 const listener = new THREE.AudioListener(); camera.add(listener);
 const audio = new THREE.Audio(listener);
 const audioLoader = new THREE.AudioLoader();
 
-// Animation state
+// Animation/State
 const clock = new THREE.Clock();
 let mixer=null, clip=null, action=null, playing=false, playCount=0;
 let cfg = null, gltf=null, root=null;
@@ -129,64 +139,94 @@ let startClicked = false;
 let wantStartAnim = false;
 let deferredClick = false;
 
-// ── Config laden & mergen ─────────────────────────────────────────────────────
+// WebXR AR state
+let xrSession = null, hitTestSource = null, hitTestRequested = false, placed = false;
+let pendingPlacementMatrix = null;
+
+// ── Utils / Config ────────────────────────────────────────────────────────────
 function deepMerge(a,b){ for(const k in b){ if(b[k] && typeof b[k]==='object' && !Array.isArray(b[k])) a[k]=deepMerge(a[k]||{},b[k]); else a[k]=b[k]; } return a; }
 const DEFAULTS = {
+  meta:{ autoplace:true },
   ui:{
-    showGround:true, autocenter:true,
-    showHud:false, // wird durch controls überschrieben
-    welcome:{ eyebrow:'ARea – Szene', title:'Willkommen', desc:'Klicke auf OK, um zu starten.', cta:'OK', poster:'' },
-    controls:{ showPlay:true, showMute:true }
+    showGround:false, autocenter:true,
+    welcome:{ eyebrow:'ARea – Szene', title:'Willkommen', desc:'Tippe auf OK, um AR zu starten.', cta:'OK', poster:'' },
+    controls:{ showPlay:true, showMute:true },
+    overlayBackground:'poster' // 'poster' | 'camera'
   },
-  camera:{ fov:50, near:.1, far:100, start:[2.5,1.6,3.6], lookAt:[0,1,0] },
+  camera:{ fov:50, near:.01, far:100, start:[2.5,1.6,3.6], lookAt:[0,1,0] },
   model:{ url:'', scale:1, rotateY:0 },
   animation:{ enabled:true, clipName:null, start:'onStart', loop:false, iterations:1, clampWhenFinished:true, crossfade:.25, timeScale:1 },
   audio:{ url:'', autoplay:'withAnimation', loop:true, volume:.85 }
 };
 function resolveRel(u, baseUrl){ if(!u) return u; try{ return new URL(u, baseUrl).href; }catch{ return u; } }
 
+function updateHUD(){
+  const showPlay = !!cfg?.ui?.controls?.showPlay && !!action;
+  const showMute = !!cfg?.ui?.controls?.showMute && !!cfg?.audio?.url;
+  btnPlay.style.display   = showPlay ? '' : 'none';
+  btnReplay.style.display = showPlay ? '' : 'none';
+  btnSound.style.display  = showMute ? '' : 'none';
+  show(hud, (showPlay || showMute));
+}
+
+// ── Config laden & anwenden ───────────────────────────────────────────────────
 (async()=>{
   try{
     const r = await fetch(configURL, { mode:'cors', cache:'no-cache' });
     const j = await r.json();
     cfg = deepMerge(structuredClone(DEFAULTS), j);
+
+    // URLs auflösen
+    if (cfg.model?.url)  cfg.model.url  = resolveRel(cfg.model.url,  configURL);
+    if (!cfg.audio?.url && j?.audio?.src) cfg.audio.url = resolveRel(j.audio.src, configURL);
+    if (cfg.audio?.url)  cfg.audio.url  = resolveRel(cfg.audio.url,  configURL);
+
+    // Poster sammeln: ui.welcome.poster → target.previewUrl → poster.jpg
+    let posterUrl = cfg.ui?.welcome?.poster || j?.target?.previewUrl || j?.poster;
+    if (posterUrl) posterUrl = resolveRel(posterUrl, configURL);
+    else if (sceneId) posterUrl = `${workerBase}/scenes/${encodeURIComponent(sceneId)}/poster.jpg`;
+
+    // Welcome befüllen
+    document.title = (cfg.ui?.welcome?.title || 'ARea – Scene Viewer');
+    wEyebrow.textContent = cfg.ui?.welcome?.eyebrow ?? DEFAULTS.ui.welcome.eyebrow;
+    wTitle.textContent   = cfg.ui?.welcome?.title   ?? DEFAULTS.ui.welcome.title;
+    wDesc.textContent    = cfg.ui?.welcome?.desc    ?? DEFAULTS.ui.welcome.desc;
+    wStart.textContent   = (cfg.ui?.welcome?.cta || 'OK');
+    if (posterUrl) {
+      poster.src = posterUrl;
+      poster.onerror = () => { document.querySelector('.poster').style.display='none'; };
+    } else {
+      document.querySelector('.poster').style.display='none';
+    }
+
   }catch(e){
     toast('Config konnte nicht geladen – Defaults genutzt.');
     cfg = structuredClone(DEFAULTS);
   }
 
-  // Abs. URLs
-  if (cfg.model?.url) cfg.model.url = resolveRel(cfg.model.url, configURL);
-  if (cfg.audio?.url) cfg.audio.url = resolveRel(cfg.audio.url, configURL);
-  if (cfg.ui?.welcome?.poster) cfg.ui.welcome.poster = resolveRel(cfg.ui.welcome.poster, configURL);
+  // Kamera/Controls/Scene (Fallback-Viewer Setup; AR überschreibt Hintergrund)
+  camera.fov = cfg.camera.fov ?? camera.fov;
+  camera.near= cfg.camera.near ?? camera.near;
+  camera.far = cfg.camera.far ?? camera.far;
+  camera.updateProjectionMatrix();
+  if (cfg.camera.start) camera.position.set(...cfg.camera.start);
+  if (cfg.camera.lookAt) controls.target.set(...cfg.camera.lookAt);
 
-  // Welcome füllen
-  document.title = (cfg.ui?.welcome?.title || 'ARea – Scene Viewer');
-  wEyebrow.textContent = cfg.ui?.welcome?.eyebrow ?? DEFAULTS.ui.welcome.eyebrow;
-  wTitle.textContent   = cfg.ui?.welcome?.title   ?? DEFAULTS.ui.welcome.title;
-  wDesc.textContent    = cfg.ui?.welcome?.desc    ?? DEFAULTS.ui.welcome.desc;
-  wStart.textContent   = (cfg.ui?.welcome?.cta || 'OK');
-  if (cfg.ui?.welcome?.poster){ poster.src = cfg.ui.welcome.poster; } else { document.querySelector('.poster').style.display='none'; }
-
-  // Kamera/Controls/Scene
-  if (cfg.camera){
-    camera.fov = cfg.camera.fov ?? camera.fov; camera.near = cfg.camera.near ?? camera.near; camera.far = cfg.camera.far ?? camera.far; camera.updateProjectionMatrix();
-    if (cfg.camera.start) camera.position.set(...cfg.camera.start);
-    if (cfg.camera.lookAt) controls.target.set(...cfg.camera.lookAt);
-  }
-  ground.visible = !!cfg.ui?.showGround;
   baseVolume = cfg.audio?.volume ?? 0.85;
 
-  // GLB laden
+  // GLB laden (mit Draco)
   const loader = new GLTFLoader(); loader.setCrossOrigin('anonymous');
+  const draco  = new DRACOLoader(); draco.setDecoderPath('https://www.gstatic.com/draco/v1/decoders/'); loader.setDRACOLoader(draco);
   try { gltf = await loader.loadAsync(cfg.model.url); }
   catch(e) { toast('GLB laden fehlgeschlagen'); console.warn(e); }
 
   root = gltf?.scene || new THREE.Group();
   root.traverse(o=>{ if(o.isMesh){ if(o.material?.map) o.material.map.colorSpace = THREE.SRGBColorSpace; }});
-  root.scale.setScalar(cfg.model.scale||1); root.rotation.y = cfg.model.rotateY||0; scene.add(root);
+  root.scale.setScalar(cfg.model.scale||1);
+  root.rotation.y = cfg.model.rotateY||0;
+  scene.add(root);
 
-  // Auto-Center
+  // Auto-Center (für Fallback; in AR wird positioniert)
   if (cfg.ui?.autocenter && root){
     const box = new THREE.Box3().setFromObject(root);
     const size = new THREE.Vector3(); box.getSize(size);
@@ -198,6 +238,7 @@ function resolveRel(u, baseUrl){ if(!u) return u; try{ return new URL(u, baseUrl
 
   // Animation
   if (gltf?.animations?.length && cfg.animation.enabled){
+    console.debug('GLTF animations:', gltf.animations.map(a=>a.name));
     mixer = new THREE.AnimationMixer(root);
     clip = cfg.animation.clipName
       ? THREE.AnimationClip.findByName(gltf.animations, cfg.animation.clipName) || gltf.animations[0]
@@ -215,8 +256,9 @@ function resolveRel(u, baseUrl){ if(!u) return u; try{ return new URL(u, baseUrl
         else { playing=false; }
       }
     });
-    if (wantStartAnim) { playAnim(true); wantStartAnim=false; }
-    if (deferredClick) { playAnim(true); deferredClick=false; }
+  } else {
+    // keine Clips → Play-Buttons verbergen
+    cfg.ui.controls.showPlay = false;
   }
 
   // Audio
@@ -227,30 +269,87 @@ function resolveRel(u, baseUrl){ if(!u) return u; try{ return new URL(u, baseUrl
       );
     }catch(e){ console.warn('Audio load fail', e); }
   }
+
+  // Falls Benutzer schon auf OK tippte bevor Assets fertig waren
+  if (startClicked){
+    updateHUD();
+    if (cfg?.animation?.start === 'onStart' && action) playAnim(true);
+    if (cfg?.audio?.autoplay === 'auto') playSound();
+  }
 })();
 
-// ── Public Start ──────────────────────────────────────────────────────────────
-window.__start = function(){
-  startClicked = true;
-  try { listener?.context?.resume?.(); } catch {}
+// ── AR Start / Hit-Test / Placement ───────────────────────────────────────────
+async function canStartAR(){
+  try { return !!(navigator.xr && await navigator.xr.isSessionSupported('immersive-ar')); }
+  catch { return false; }
+}
 
-  // HUD vis nach Flags
-  const showPlay = !!cfg?.ui?.controls?.showPlay;
-  const showMute = !!cfg?.ui?.controls?.showMute && !!cfg?.audio?.url;
-  btnPlay.style.display   = showPlay ? '' : 'none';
-  btnReplay.style.display = showPlay ? '' : 'none';
-  btnSound.style.display  = showMute ? '' : 'none';
-  show(hud, (showPlay || showMute));
+async function startAR(){
+  const supported = await canStartAR();
+  if (!supported) return false;
 
-  show(welcome,false);
+  xrSession = await navigator.xr.requestSession('immersive-ar', {
+    requiredFeatures:['hit-test','local-floor'],
+    optionalFeatures:['dom-overlay'],
+    domOverlay:{ root: document.body }
+  });
 
-  if (cfg?.animation?.start === 'onStart') {
+  renderer.xr.enabled = true;
+  renderer.xr.setReferenceSpaceType('local-floor');
+  await renderer.xr.setSession(xrSession);
+
+  if (!reticle){ reticle = makeReticle(); scene.add(reticle); }
+  hitTestRequested = false; placed = false; pendingPlacementMatrix = null;
+
+  // Tap-Place (falls Autoplace deaktiviert)
+  const controller = renderer.xr.getController(0);
+  controller.addEventListener('select', ()=>{
+    if (reticle && reticle.visible && !placed) placeModelFromMatrix(reticle.matrix);
+  });
+  scene.add(controller);
+
+  xrSession.addEventListener('end', ()=>{
+    hitTestSource = null; hitTestRequested = false; xrSession = null;
+  });
+
+  return true;
+}
+
+function placeModelFromMatrix(mat4){
+  if (!root){ pendingPlacementMatrix = mat4.clone(); return; }
+  root.matrixAutoUpdate = true;
+  root.position.setFromMatrixPosition(mat4);
+  placed = true;
+
+  if (cfg?.animation?.start === 'onStart'){
     if (action) playAnim(true); else wantStartAnim = true;
   }
   if (cfg?.audio?.autoplay === 'auto') playSound();
+}
+
+// ── Public Start (OK-Button) ──────────────────────────────────────────────────
+window.__start = async function(){
+  startClicked = true;
+  try { listener?.context?.resume?.(); } catch {}
+
+  updateHUD();
+  show(welcome,false);
+
+  if (cfg?.ui?.overlayBackground === 'camera'){
+    // optional: Preview hinter Overlay laufen lassen
+    startCameraPreview();
+  }
+
+  const arStarted = await startAR().catch(()=>false);
+  if (!arStarted){
+    toast('WebXR-AR nicht verfügbar – zeige 3D ohne AR.');
+    // Fallback: Non-AR, ggf. Animation/Audio starten
+    if (cfg?.animation?.start === 'onStart' && action) playAnim(true);
+    if (cfg?.audio?.autoplay === 'auto') playSound();
+  }
 };
 
-// Overlay-Kamera (Preview)
+// Overlay-Kamera (Preview, kein AR)
 welcome.addEventListener('pointerdown', (e)=>{
   if (e.target !== wStart && cfg?.ui?.overlayBackground === 'camera') startCameraPreview();
 });
@@ -292,18 +391,53 @@ btnPlay.addEventListener('click', ()=>{ if (!action) return; playing ? pauseAnim
 btnReplay.addEventListener('click', ()=>{ if (!action) return; playAnim(true); });
 btnSound.addEventListener('click', toggleSound);
 
-// ── Loop / Resize ─────────────────────────────────────────────────────────────
-renderer.setAnimationLoop(()=>{
+// ── Render / XR-HitTest Loop ─────────────────────────────────────────────────
+renderer.setAnimationLoop((t, frame)=>{
   const dt = clock.getDelta();
   mixer?.update(dt);
-  controls.update();
+
+  if (renderer.xr.isPresenting && frame){
+    const refSpace = renderer.xr.getReferenceSpace();
+    const session  = renderer.xr.getSession();
+
+    if (!hitTestRequested){
+      session.requestReferenceSpace('viewer').then((viewerSpace)=>{
+        session.requestHitTestSource({ space: viewerSpace }).then(src => { hitTestSource = src; });
+      });
+      session.addEventListener('end', ()=>{ hitTestRequested=false; hitTestSource=null; });
+      hitTestRequested = true;
+    }
+
+    if (hitTestSource){
+      const hits = frame.getHitTestResults(hitTestSource);
+      if (hits.length){
+        const pose = hits[0].getPose(refSpace);
+        if (!reticle){ reticle = makeReticle(); scene.add(reticle); }
+        reticle.visible = true;
+        reticle.matrix.fromArray(pose.transform.matrix);
+
+        if (!placed && (cfg?.meta?.autoplace ?? true)){
+          placeModelFromMatrix(new THREE.Matrix4().fromArray(pose.transform.matrix));
+        }
+      } else if (reticle){ reticle.visible = false; }
+    }
+  } else {
+    controls.update();
+  }
+
+  if (pendingPlacementMatrix && root){
+    placeModelFromMatrix(pendingPlacementMatrix);
+    pendingPlacementMatrix = null;
+  }
+
   renderer.render(scene, camera);
 });
+
 addEventListener('resize', ()=>{
   camera.aspect=innerWidth/innerHeight; camera.updateProjectionMatrix(); renderer.setSize(innerWidth, innerHeight);
 });
 
-// „T“-Guard (nur Konsistenz)
+// Tastatur-Guard (nur Konsistenz)
 addEventListener('keydown', (e)=>{
   if ((e.key||'').toLowerCase() !== 't') return;
   const el = e.target;
