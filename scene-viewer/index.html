@@ -14,6 +14,12 @@
       position:absolute; left:max(12px,env(safe-area-inset-left)); top:max(12px,env(safe-area-inset-top));
       padding:.75rem 1rem; border-radius:12px; border:1px solid rgba(255,255,255,.25); background:#111; color:#fff
     }
+    /* HUD */
+    #hud{position:fixed; right:max(12px,env(safe-area-inset-right)); bottom:max(12px,env(safe-area-inset-bottom));
+      display:flex; gap:8px; z-index:3; background:rgba(0,0,0,.35); border:1px solid rgba(255,255,255,.15);
+      padding:6px; border-radius:999px; backdrop-filter:blur(6px)}
+    #hud.hidden{display:none}
+    #hud button{all:unset; cursor:pointer; padding:8px 12px; border-radius:10px; color:#fff; user-select:none}
     #err{position:fixed;left:12px;top:12px;z-index:9;background:#b00020;color:#fff;padding:8px 10px;border-radius:8px;display:none;font:12px/1.35 monospace;max-width:min(92vw,680px);white-space:pre-wrap}
   </style>
 </head>
@@ -31,8 +37,14 @@
     camera-target="auto"
     field-of-view="30deg"
     poster="">
-    <button slot="ar-button">In AR öffnen</button>
+    <button slot="ar-button" id="arBtn">In AR öffnen</button>
   </model-viewer>
+
+  <!-- Mini-HUD -->
+  <div id="hud" class="hidden">
+    <button id="btnPlay" title="Play/Pause">▶︎/⏸</button>
+    <button id="btnMute" title="Ton an/aus">🔊</button>
+  </div>
 
 <script>
   const qs = new URLSearchParams(location.search);
@@ -66,62 +78,54 @@
   const showErr = (m)=>{ const el=document.getElementById('err'); el.textContent=m; el.style.display='block'; };
 
   const mv = document.getElementById('mv');
-  let cfg = { model:{ url: SCENE_GLB || "https://modelviewer.dev/shared-assets/models/Astronaut.glb", usdzUrl:null, animation:"*" },
-              target:{ previewUrl:null } };
+  const hud = document.getElementById('hud');
+  const btnPlay = document.getElementById('btnPlay');
+  const btnMute = document.getElementById('btnMute');
+  const arBtn   = document.getElementById('arBtn');
+
+  // Basiskonfig mit UI/Audio-Flags wie im scene-viewer
+  let cfg = {
+    model:{ url: SCENE_GLB || "https://modelviewer.dev/shared-assets/models/Astronaut.glb", usdzUrl:null, animation:"*" },
+    target:{ previewUrl:null },
+    audio:{ src:null, autoplay:"withAnimation", loop:true, volume:0.85 },
+    ui:{
+      showPlayPause:false,
+      showMute:false,
+      showAR:true,
+      arLabel:"In AR öffnen"
+    }
+  };
+
+  // Audio-Objekt (optional)
+  let audio=null, audioReady=false, muted=false;
+  function setupAudio(){
+    if (!cfg.audio?.src) return;
+    audio = new Audio(cfg.audio.src);
+    audio.crossOrigin = "anonymous";
+    audio.loop = !!cfg.audio.loop;
+    audio.volume = Number.isFinite(cfg.audio.volume) ? cfg.audio.volume : 0.85;
+    audioReady = true;
+  }
+  function setMuted(on){
+    muted = !!on;
+    if (audio && audioReady) audio.muted = muted;
+    btnMute.textContent = muted ? '🔈' : '🔊';
+  }
 
   (async () => {
     try {
       // 1) Wenn GLB ermittelt → direkt setzen (mit .glb-Hint)
-      if (SCENE_GLB) {
-        mv.src = SCENE_GLB + '#.glb';
-      }
+      if (SCENE_GLB) mv.src = SCENE_GLB + '#.glb';
 
       // 2) Optional JSON laden
       if (SCENE_JSON) {
         const r = await fetch(SCENE_JSON, { cache: 'no-cache' });
         if (!r.ok) throw new Error(r.status + ' ' + r.statusText);
         const j = await r.json();
-        if (j.model)  cfg.model  = Object.assign(cfg.model,  j.model);
-        if (j.target) cfg.target = Object.assign(cfg.target, j.target);
 
-        if (!SCENE_GLB && cfg.model.url) {
-          mv.src = cfg.model.url + '#.glb';
-        }
-      }
+        if (j.model)  Object.assign(cfg.model,  j.model);
+        if (j.target) Object.assign(cfg.target, j.target);
+        if (j.audio)  Object.assign(cfg.audio,  j.audio);
 
-      // 3) USDZ/Poster
-      const usdz = overrideUsdz || cfg.model.usdzUrl;
-      if (usdz) mv.setAttribute('ios-src', usdz); else mv.removeAttribute('ios-src');
-      if (cfg.target?.previewUrl) mv.setAttribute('poster', cfg.target.previewUrl);
-
-    } catch (e) {
-      showErr('scene.json konnte nicht geladen werden: ' + e.message);
-      console.error(e);
-    }
-  })();
-
-  mv.addEventListener('load', ()=>{
-    mv.cameraOrbit = '0deg 70deg auto';
-    mv.cameraTarget = 'auto';
-    mv.fieldOfView  = '30deg';
-    mv.jumpCameraToGoal();
-
-    const names = mv.availableAnimations || [];
-    const sel = cfg.model.animation;
-
-    if (sel === 'none'){ mv.autoplay=false; mv.animationName=null; return; }
-    if (sel === '*' || sel==null){
-      if (names.length){ mv.animationName = names[0]; mv.autoplay=true; }
-      return;
-    }
-    if (typeof sel === 'string'){
-      if (names.includes(sel)){ mv.animationName = sel; mv.autoplay=true; }
-      else if (names.length){ mv.animationName = names[0]; mv.autoplay=true; }
-      return;
-    }
-    const idx = Math.max(0, Math.min(names.length-1, parseInt(sel||0,10)));
-    if (names[idx]){ mv.animationName = names[idx]; mv.autoplay=true; }
-  });
-</script>
-</body>
-</html>
+        // UI-Felder flexibel lesen (legacy + neu)
+        if (j.ui){
