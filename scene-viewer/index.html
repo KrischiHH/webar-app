@@ -9,7 +9,6 @@
   html,body{height:100%;margin:0;background:var(--bg);color:var(--text);font:16px/1.4 system-ui,Segoe UI,Inter,Roboto,Arial}
   #app{position:fixed;inset:0}
   canvas{display:block;width:100%;height:100%}
-  /* Kamera-Preview für Overlay (optional) */
   #camPreview{position:fixed;inset:0;object-fit:cover;z-index:0;display:none}
   .overlay{position:fixed;inset:0;display:grid;place-items:center;padding:24px;background:linear-gradient(180deg, rgba(14,17,22,.9), rgba(14,17,22,.96));z-index:2}
   .card{width:min(880px,92vw);border:1px solid var(--border);border-radius:20px;overflow:hidden;background:linear-gradient(180deg,#0b1220,#0e1422);box-shadow:0 12px 40px rgba(0,0,0,.4);display:grid;grid-template-columns:320px 1fr}
@@ -36,9 +35,7 @@
 </script>
 </head>
 <body>
-<!-- optional: Kamera hinter Overlay -->
 <video id="camPreview" autoplay muted playsinline></video>
-
 <div id="app"></div>
 
 <!-- Willkommen -->
@@ -50,7 +47,6 @@
       <h1 id="welcomeTitle">Willkommen</h1>
       <p id="welcomeDesc">Diese Szene enthält Animation und ggf. Audio. Klicke auf OK, um zu starten.</p>
       <div class="row">
-        <!-- Fallback: onclick ruft __start auf, falls Listener nicht registriert wäre -->
         <button id="welcomeStart" class="btn" onclick="window.__start && window.__start()">OK</button>
         <span class="muted" id="welcomeHint" style="color:#9fb3d9;font-size:13px">Audio startet ggf. nach Klick (Autoplay-Policy)</span>
       </div>
@@ -58,7 +54,7 @@
   </div>
 </div>
 
-<!-- HUD (standardmäßig unsichtbar; erst nach OK & wenn ui.showHud===true) -->
+<!-- HUD -->
 <div id="hud" class="hud" style="display:none">
   <button id="btnPlay" title="Play/Pause">▶︎/⏸</button>
   <button id="btnReplay" title="Neu starten">↻</button>
@@ -133,132 +129,52 @@ let startClicked = false;
 let wantStartAnim = false;
 let deferredClick = false;
 
-// WebXR AR state
-let xrSession = null, hitTestSource = null, hitTestRequested = false, reticle = null, placed = false;
-let pendingPlacementMatrix = null;
-
-function makeReticle(){
-  const geo = new THREE.RingGeometry(0.07, 0.08, 32).rotateX(-Math.PI/2);
-  const mat = new THREE.MeshBasicMaterial({ color:0x66ccff });
-  const m = new THREE.Mesh(geo, mat); m.matrixAutoUpdate=false; m.visible=false;
-  return m;
-}
-
-async function canStartAR(){
-  try { return !!(navigator.xr && await navigator.xr.isSessionSupported('immersive-ar')); }
-  catch { return false; }
-}
-
-async function startAR(){
-  const supported = await canStartAR();
-  if (!supported) return false;
-
-  xrSession = await navigator.xr.requestSession('immersive-ar', { requiredFeatures:['hit-test','local-floor'] });
-  renderer.xr.enabled = true;
-  renderer.xr.setReferenceSpaceType('local-floor');
-  await renderer.xr.setSession(xrSession);
-
-  if (!reticle){ reticle = makeReticle(); scene.add(reticle); }
-  ground.visible = false; // hide ground in AR
-  hitTestRequested = false; placed = false; pendingPlacementMatrix = null;
-
-  xrSession.addEventListener('end', ()=>{
-    hitTestSource = null; hitTestRequested = false; xrSession = null;
-    ground.visible = !!(cfg?.ui?.showGround);
-  });
-
-  return true;
-}
-
-function placeModelFromMatrix(mat4){
-  if (!root) { pendingPlacementMatrix = mat4.clone(); return; }
-  const pos = new THREE.Vector3().setFromMatrixPosition(mat4);
-  root.position.copy(pos);
-  placed = true;
-  // Start animation if configured
-  if (cfg?.animation?.start === 'onStart'){
-    if (action) playAnim(true); else wantStartAnim = true;
-  }
-}
-
-// Public Start
-window.__start = async function(){
-  startClicked = true;
-  try { listener?.context?.resume?.(); } catch {}
-
-  // HUD buttons visibility based on ui.controls flags
-  const showPlay = !!cfg?.ui?.controls?.showPlay;
-  const showMute = !!cfg?.ui?.controls?.showMute && !!cfg?.audio?.url;
-  btnPlay.style.display  = showPlay ? '' : 'none';
-  btnReplay.style.display= showPlay ? '' : 'none';
-  btnSound.style.display = showMute ? '' : 'none';
-  show(hud, (showPlay || showMute));
-
-  show(welcome,false);
-
-  // Try AR; fallback if not supported
-  const arStarted = await startAR().catch(()=>false);
-  if (!arStarted){
-    // Non-AR fallback is already active (OrbitControls); start auto animation if set
-    if (cfg?.animation?.start === 'onStart') {
-      if (action) playAnim(true); else wantStartAnim = true;
-    }
-    // Optional: start audio if autoplay 'auto'
-    if (cfg?.audio?.autoplay === 'auto') playSound();
-  }
-  // If autoplay audio with animation, it will start together with animation.
+// ── Config laden & mergen ─────────────────────────────────────────────────────
+function deepMerge(a,b){ for(const k in b){ if(b[k] && typeof b[k]==='object' && !Array.isArray(b[k])) a[k]=deepMerge(a[k]||{},b[k]); else a[k]=b[k]; } return a; }
+const DEFAULTS = {
+  ui:{
+    showGround:true, autocenter:true,
+    showHud:false, // wird durch controls überschrieben
+    welcome:{ eyebrow:'ARea – Szene', title:'Willkommen', desc:'Klicke auf OK, um zu starten.', cta:'OK', poster:'' },
+    controls:{ showPlay:true, showMute:true }
+  },
+  camera:{ fov:50, near:.1, far:100, start:[2.5,1.6,3.6], lookAt:[0,1,0] },
+  model:{ url:'', scale:1, rotateY:0 },
+  animation:{ enabled:true, clipName:null, start:'onStart', loop:false, iterations:1, clampWhenFinished:true, crossfade:.25, timeScale:1 },
+  audio:{ url:'', autoplay:'withAnimation', loop:true, volume:.85 }
 };
+function resolveRel(u, baseUrl){ if(!u) return u; try{ return new URL(u, baseUrl).href; }catch{ return u; } }
 
-// Welcome overlay camera preview listener remains
-// ...existing overlay pointer handlers...
-
-// Controls handlers (unchanged)
-function playAnim(reset=false){
-  if (!action) return;
-  if (reset){ action.reset(); playCount=0; }
-  action.enabled = true;
-  action.fadeIn(cfg.animation?.crossfade || 0).play();
-  action.paused = false;
-  playing = true;
-  if (cfg.audio?.autoplay === 'withAnimation' && audioReady && !audio.isPlaying){
-    audio.play();
-  }
-}
-function pauseAnim(){
-  if (!action) return;
-  action.paused = true; playing = false;
-  if (cfg.audio?.autoplay === 'withAnimation' && audioReady && audio.isPlaying){
-    audio.stop();
-  }
-}
-function setMuted(on){
-  muted = !!on;
-  if (audioReady) audio.setVolume(muted ? 0 : baseVolume);
-  btnSound.textContent = muted ? '🔈' : '🔊';
-}
-function toggleSound(){ if (!audioReady) return; setMuted(!muted); }
-function playSound(){
-  if (!audioReady) return;
-  listener.context.resume?.();
-  setMuted(false);
-  if (!audio.isPlaying) audio.play();
-}
-btnPlay.addEventListener('click', ()=>{ if (!action) return; playing ? pauseAnim() : playAnim(); });
-btnReplay.addEventListener('click', ()=>{ if (!action) return; playAnim(true); });
-btnSound.addEventListener('click', toggleSound);
-
-
-// Load config and assets
 (async()=>{
-  // ...existing config load/merge...
+  try{
+    const r = await fetch(configURL, { mode:'cors', cache:'no-cache' });
+    const j = await r.json();
+    cfg = deepMerge(structuredClone(DEFAULTS), j);
+  }catch(e){
+    toast('Config konnte nicht geladen – Defaults genutzt.');
+    cfg = structuredClone(DEFAULTS);
+  }
+
   // Abs. URLs
-  // ...existing URL resolving...
+  if (cfg.model?.url) cfg.model.url = resolveRel(cfg.model.url, configURL);
+  if (cfg.audio?.url) cfg.audio.url = resolveRel(cfg.audio.url, configURL);
+  if (cfg.ui?.welcome?.poster) cfg.ui.welcome.poster = resolveRel(cfg.ui.welcome.poster, configURL);
 
-  // UI Welcome fill
-  // ...existing UI fill...
+  // Welcome füllen
+  document.title = (cfg.ui?.welcome?.title || 'ARea – Scene Viewer');
+  wEyebrow.textContent = cfg.ui?.welcome?.eyebrow ?? DEFAULTS.ui.welcome.eyebrow;
+  wTitle.textContent   = cfg.ui?.welcome?.title   ?? DEFAULTS.ui.welcome.title;
+  wDesc.textContent    = cfg.ui?.welcome?.desc    ?? DEFAULTS.ui.welcome.desc;
+  wStart.textContent   = (cfg.ui?.welcome?.cta || 'OK');
+  if (cfg.ui?.welcome?.poster){ poster.src = cfg.ui.welcome.poster; } else { document.querySelector('.poster').style.display='none'; }
 
-  // Camera/scene
-  // ...existing camera/ground setup...
+  // Kamera/Controls/Scene
+  if (cfg.camera){
+    camera.fov = cfg.camera.fov ?? camera.fov; camera.near = cfg.camera.near ?? camera.near; camera.far = cfg.camera.far ?? camera.far; camera.updateProjectionMatrix();
+    if (cfg.camera.start) camera.position.set(...cfg.camera.start);
+    if (cfg.camera.lookAt) controls.target.set(...cfg.camera.lookAt);
+  }
+  ground.visible = !!cfg.ui?.showGround;
   baseVolume = cfg.audio?.volume ?? 0.85;
 
   // GLB laden
@@ -268,10 +184,9 @@ btnSound.addEventListener('click', toggleSound);
 
   root = gltf?.scene || new THREE.Group();
   root.traverse(o=>{ if(o.isMesh){ if(o.material?.map) o.material.map.colorSpace = THREE.SRGBColorSpace; }});
-  root.scale.setScalar(cfg.model.scale||1); root.rotation.y = cfg.model.rotateY||0;
-  scene.add(root);
+  root.scale.setScalar(cfg.model.scale||1); root.rotation.y = cfg.model.rotateY||0; scene.add(root);
 
-  // Auto-Center (only for non-AR fallback)
+  // Auto-Center
   if (cfg.ui?.autocenter && root){
     const box = new THREE.Box3().setFromObject(root);
     const size = new THREE.Vector3(); box.getSize(size);
@@ -314,57 +229,86 @@ btnSound.addEventListener('click', toggleSound);
   }
 })();
 
-// ── Render / XR hit-test loop
-renderer.setAnimationLoop((t, frame)=>{
+// ── Public Start ──────────────────────────────────────────────────────────────
+window.__start = function(){
+  startClicked = true;
+  try { listener?.context?.resume?.(); } catch {}
+
+  // HUD vis nach Flags
+  const showPlay = !!cfg?.ui?.controls?.showPlay;
+  const showMute = !!cfg?.ui?.controls?.showMute && !!cfg?.audio?.url;
+  btnPlay.style.display   = showPlay ? '' : 'none';
+  btnReplay.style.display = showPlay ? '' : 'none';
+  btnSound.style.display  = showMute ? '' : 'none';
+  show(hud, (showPlay || showMute));
+
+  show(welcome,false);
+
+  if (cfg?.animation?.start === 'onStart') {
+    if (action) playAnim(true); else wantStartAnim = true;
+  }
+  if (cfg?.audio?.autoplay === 'auto') playSound();
+};
+
+// Overlay-Kamera (Preview)
+welcome.addEventListener('pointerdown', (e)=>{
+  if (e.target !== wStart && cfg?.ui?.overlayBackground === 'camera') startCameraPreview();
+});
+function startCameraPreview(){
+  if (camPreview.dataset.on === '1') return;
+  navigator.mediaDevices?.getUserMedia?.({ video:{ facingMode:'environment' }, audio:false })
+    .then(s=>{ camPreview.srcObject = s; camPreview.dataset.on='1'; show(camPreview, true); })
+    .catch(()=>{});
+}
+
+// ── Controls ──────────────────────────────────────────────────────────────────
+function playAnim(reset=false){
+  if (!action) return;
+  if (reset){ action.reset(); playCount=0; }
+  action.enabled = true;
+  action.fadeIn(cfg.animation?.crossfade || 0).play();
+  action.paused = false;
+  playing = true;
+  if (cfg.audio?.autoplay === 'withAnimation' && audioReady && !audio.isPlaying) audio.play();
+}
+function pauseAnim(){
+  if (!action) return;
+  action.paused = true; playing = false;
+  if (cfg.audio?.autoplay === 'withAnimation' && audioReady && audio.isPlaying) audio.stop();
+}
+function setMuted(on){
+  muted = !!on;
+  if (audioReady) audio.setVolume(muted ? 0 : baseVolume);
+  btnSound.textContent = muted ? '🔈' : '🔊';
+}
+function toggleSound(){ if (!audioReady) return; setMuted(!muted); }
+function playSound(){
+  if (!audioReady) return;
+  listener.context.resume?.();
+  setMuted(false);
+  if (!audio.isPlaying) audio.play();
+}
+btnPlay.addEventListener('click', ()=>{ if (!action) return; playing ? pauseAnim() : playAnim(); });
+btnReplay.addEventListener('click', ()=>{ if (!action) return; playAnim(true); });
+btnSound.addEventListener('click', toggleSound);
+
+// ── Loop / Resize ─────────────────────────────────────────────────────────────
+renderer.setAnimationLoop(()=>{
   const dt = clock.getDelta();
   mixer?.update(dt);
-
-  if (renderer.xr.isPresenting && frame){
-    const refSpace = renderer.xr.getReferenceSpace();
-    const session  = renderer.xr.getSession();
-
-    if (!hitTestRequested){
-      session.requestReferenceSpace('viewer').then((viewerSpace)=>{
-        session.requestHitTestSource({ space: viewerSpace }).then(src => { hitTestSource = src; });
-      });
-      session.addEventListener('end', ()=>{ hitTestRequested=false; hitTestSource=null; });
-      hitTestRequested = true;
-    }
-
-    if (hitTestSource){
-      const hits = frame.getHitTestResults(hitTestSource);
-      if (hits.length){
-        const pose = hits[0].getPose(refSpace);
-        if (reticle){
-          reticle.visible = true;
-          reticle.matrix.fromArray(pose.transform.matrix);
-        }
-        if (!placed){
-          placeModelFromMatrix(new THREE.Matrix4().fromArray(pose.transform.matrix));
-        }
-      } else if (reticle){ reticle.visible = false; }
-    }
-  } else {
-    controls.update();
-  }
-
-  // Apply pending placement if root arrived after hit
-  if (pendingPlacementMatrix && root){
-    placeModelFromMatrix(pendingPlacementMatrix);
-    pendingPlacementMatrix = null;
-  }
-
+  controls.update();
   renderer.render(scene, camera);
 });
-
 addEventListener('resize', ()=>{
   camera.aspect=innerWidth/innerHeight; camera.updateProjectionMatrix(); renderer.setSize(innerWidth, innerHeight);
 });
 
-// Guard „T“ while typing – no theme toggling here, but keep guard for consistency
-window.addEventListener('keydown', (e)=>{
+// „T“-Guard (nur Konsistenz)
+addEventListener('keydown', (e)=>{
   if ((e.key||'').toLowerCase() !== 't') return;
   const el = e.target;
   if (el && el.closest && el.closest('input,textarea,select,[contenteditable="true"]')) e.stopPropagation();
 });
 </script>
+</body>
+</html>
