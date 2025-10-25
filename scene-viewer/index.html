@@ -7,14 +7,19 @@
 <link rel="icon" href="data:,">
 <style>
   :root{ --bg:#0e1116; --panel:#111828; --panel2:#192339; --text:#e9ecf5; --muted:#9fb3d9; --border:#24314a; }
-  html,body{height:100%;margin:0;background:var(--bg);color:var(--text);font:16px/1.4 system-ui,Segoe UI,Inter,Roboto,Arial}
+  html,body{height:100%;margin:0;background:#000;color:var(--text);font:16px/1.4 system-ui,Segoe UI,Inter,Roboto,Arial}
   #app{position:fixed;inset:0}
   canvas{display:block;width:100%;height:100%}
-  /* Kamera-Preview nur fürs Overlay; AR nutzt XR-Feed */
+
+  /* Kamera-Preview (nur für Welcome-Overlay, nicht AR) */
   #camPreview{position:fixed;inset:0;object-fit:cover;z-index:0;display:none}
 
-  .overlay{position:fixed;inset:0;display:grid;place-items:center;padding:24px;background:linear-gradient(180deg, rgba(14,17,22,.9), rgba(14,17,22,.96));z-index:4}
-  .card{width:min(880px,92vw);border:1px solid var(--border);border-radius:20px;overflow:hidden;background:linear-gradient(180deg,#0b1220,#0e1422);box-shadow:0 12px 40px rgba(0,0,0,.4);display:grid;grid-template-columns:320px 1fr}
+  /* Poster-Overlay */
+  .overlay{position:fixed;inset:0;display:flex;align-items:center;justify-content:center;padding:24px;
+           background:rgba(0,0,0,.9); z-index:4}
+  .card{width:min(880px,92vw);border:1px solid var(--border);border-radius:20px;overflow:hidden;
+        background:linear-gradient(180deg,#0b1220,#0e1422);box-shadow:0 12px 40px rgba(0,0,0,.4);
+        display:grid;grid-template-columns:320px 1fr}
   .poster{background:#0a1220;min-height:260px}
   .poster img{width:100%;height:100%;object-fit:cover;display:block}
   .body{padding:22px}
@@ -22,35 +27,43 @@
   h1{font-size:28px;margin:.35rem 0 .4rem;line-height:1.2}
   p{color:#cbd5e1;margin:.2rem 0 .8rem}
   .row{display:flex;gap:12px;align-items:center;flex-wrap:wrap;margin-top:.6rem}
-  .btn{cursor:pointer;border:1px solid var(--border);background:linear-gradient(180deg,#1a2337,#162033);color:var(--text);padding:10px 14px;border-radius:12px;font-weight:700}
-  .hud{position:fixed;left:50%;transform:translateX(-50%);bottom:16px;display:flex;gap:10px;background:rgba(14,17,22,.6);border:1px solid var(--border);border-radius:999px;padding:8px;backdrop-filter: blur(6px);z-index:3}
-  .hud button{all:unset;cursor:pointer;padding:8px 12px;border-radius:10px}
-  .toast{position:fixed;top:12px;right:12px;background:#111828;border:1px solid #24314a;color:#dbe1f1;padding:8px 12px;border-radius:10px;font-size:13px;box-shadow:0 8px 24px rgba(0,0,0,.25);z-index:5}
-  @media (max-width:860px){ .card{grid-template-columns:1fr} .poster{max-height:40vh} }
+  .btn{cursor:pointer;border:1px solid var(--border);background:linear-gradient(180deg,#1a2337,#162033);
+       color:var(--text);padding:10px 14px;border-radius:12px;font-weight:700}
 
-  /* === Loader (dein Theme, leicht angepasst) === */
+  /* HUD */
+  .hud{position:fixed;left:50%;transform:translateX(-50%);bottom:16px;display:flex;gap:10px;
+       background:rgba(14,17,22,.6);border:1px solid var(--border);border-radius:999px;padding:8px;
+       backdrop-filter: blur(6px);z-index:3}
+  .hud button{all:unset;cursor:pointer;padding:8px 12px;border-radius:10px}
+
+  /* Toasts */
+  .toast{position:fixed;top:12px;right:12px;background:#111828;border:1px solid #24314a;color:#dbe1f1;
+         padding:8px 12px;border-radius:10px;font-size:13px;box-shadow:0 8px 24px rgba(0,0,0,.25);z-index:5}
+
+  /* === Loader (zentriert, kein Blau, einmalig) === */
   #loading.overlay{ z-index: 4; }
-  .loader { width: 110px; height: 56px; position: relative; }
-  .loader-text { position: absolute; top: -18px; left: 0; right: 0; text-align: left;
-    color: #C8B6FF; animation: text_713 3.5s ease both infinite; font-size:.9rem; letter-spacing:1px; }
-  .load { background-color:#9A79FF; border-radius:50px; display:block; height:16px; width:16px; bottom:0; position:absolute; transform:translateX(64px); animation: loading_713 3.5s ease both infinite; }
-  .load::before { position:absolute; content:""; width:100%; height:100%; background-color:#D1C2FF; border-radius:inherit; animation: loading2_713 3.5s ease both infinite; }
-  @keyframes text_713 {
-    0% { letter-spacing:1px; transform:translateX(0) } 40% { letter-spacing:2px; transform:translateX(26px) }
-    80% { letter-spacing:1px; transform:translateX(32px) } 90% { letter-spacing:2px; transform:translateX(0) }
-    100% { letter-spacing:1px; transform:translateX(0) }
+  .loader-wrap{display:flex;flex-direction:column;align-items:center;justify-content:center;gap:10px;
+               width:min(420px,86vw); padding:24px; border:1px solid var(--border); border-radius:16px;
+               background:linear-gradient(180deg,#0b1220,#0e1422)}
+  .loader-title{font-weight:700; letter-spacing:.03em}
+  .loader{
+    width:110px;height:18px;position:relative;border-radius:9px;overflow:hidden;border:1px solid #2a3350;
+    background:#0f1526;
   }
-  @keyframes loading_713 {
-    0% { width:16px; transform:translateX(0) } 40% { width:100%; transform:translateX(0) }
-    80% { width:16px; transform:translateX(64px) } 90% { width:100%; transform:translateX(0) }
-    100% { width:16px; transform:translateX(0) }
+  .loader-bar{
+    position:absolute;left:0;top:0;bottom:0;width:36%;
+    background:linear-gradient(90deg,#9A79FF,#D1C2FF);
+    animation:loadbar 1.2s ease-in-out infinite;
   }
-  @keyframes loading2_713 {
-    0% { transform:translateX(0); width:16px } 40% { transform:translateX(0); width:80% }
-    80% { width:100%; transform:translateX(0) } 90% { width:80%; transform:translateX(15px) }
-    100% { transform:translateX(0); width:16px }
+  @keyframes loadbar{
+    0%{ transform:translateX(-100%) }
+    50%{ transform:translateX(30%) }
+    100%{ transform:translateX(220%) }
   }
+
+  @media (max-width:860px){ .card{grid-template-columns:1fr} .poster{max-height:40vh} }
 </style>
+
 <script type="importmap">
 {
   "imports": {
@@ -64,8 +77,8 @@
 <video id="camPreview" autoplay muted playsinline></video>
 <div id="app"></div>
 
-<!-- Willkommen / Poster -->
-<div id="welcome" class="overlay" style="display:grid">
+<!-- Poster -->
+<div id="welcome" class="overlay" style="display:flex">
   <div class="card">
     <div class="poster"><img id="welcomePoster" alt="Poster"></div>
     <div class="body">
@@ -74,19 +87,17 @@
       <p id="welcomeDesc">Diese Szene enthält Animation und ggf. Audio. Tippe auf OK, um AR zu starten.</p>
       <div class="row">
         <button id="welcomeStart" class="btn" onclick="window.__start && window.__start()">OK</button>
-        <span class="muted" id="welcomeHint" style="color:#9fb3d9;font-size:13px">Autostart kann Klick erfordern (Autoplay-Policy)</span>
+        <span class="muted" id="welcomeHint" style="color:#9fb3d9;font-size:13px">Autostart kann Klick erfordern</span>
       </div>
     </div>
   </div>
 </div>
 
-<!-- Loading Overlay -->
+<!-- EINMALIGER Loader -->
 <div id="loading" class="overlay" style="display:none">
-  <div class="card" style="grid-template-columns:1fr; place-items:center; padding:24px">
-    <div class="loader">
-      <div class="loader-text" id="loadingText">Erlebnis wird geladen …</div>
-      <span class="load"></span>
-    </div>
+  <div class="loader-wrap">
+    <div class="loader-title" id="loadingText">Scanne Oberfläche …</div>
+    <div class="loader"><div class="loader-bar"></div></div>
   </div>
 </div>
 
@@ -119,81 +130,88 @@ const hud = $('#hud'),
       btnReplay= $('#btnReplay'),
       btnSound = $('#btnSound');
 const camPreview = $('#camPreview');
-const loadingEl = $('#loading'), loadingText = $('#loadingText');
+const loadingEl  = $('#loading'), loadingText = $('#loadingText');
 
-function toast(m){ const d=document.createElement('div'); d.className='toast'; d.textContent=m; toasts.appendChild(d); setTimeout(()=>d.remove(),2600); }
-const show = (el, on)=>{ el && (el.style.display = on ? '' : 'none'); };
-const setLoading = (s, msg)=>{ if (msg) loadingText.textContent = msg; show(loadingEl, s); };
+const toast = (m)=>{ const d=document.createElement('div'); d.className='toast'; d.textContent=m; toasts.appendChild(d); setTimeout(()=>d.remove(),2400); };
+const show  = (el,on)=>{ el && (el.style.display = on ? '' : 'none'); };
 
-// ── Query / Config URL ─────────────────────────────────────────────────────────
+// === Query/URLs ===============================================================
 const qs = new URLSearchParams(location.search);
 const workerBase = (qs.get('base') || 'https://area-publish.area-webar.workers.dev').replace(/\/$/,'');
-const sceneId = (qs.get('scene') || qs.get('id') || '').trim();
-const src = (qs.get('src') || '').trim();
-const configURL = src || (sceneId ? `${workerBase}/scenes/${encodeURIComponent(sceneId)}/scene.json` : '');
-if (!configURL){ toast('Keine scene.json – ?scene=ID oder ?src=URL verwenden.'); }
+const sceneId    = (qs.get('scene') || qs.get('id') || '').trim();
+const src        = (qs.get('src')   || '').trim();
+const configURL  = src || (sceneId ? `${workerBase}/scenes/${encodeURIComponent(sceneId)}/scene.json` : '');
+if (!configURL) toast('Keine scene.json – ?scene=ID oder ?src=URL verwenden.');
 
-// ── THREE Setup ───────────────────────────────────────────────────────────────
+// === THREE setup (transparent, kein Blau) =====================================
 const renderer = new THREE.WebGLRenderer({ antialias:true, powerPreference:'high-performance', alpha:true });
 renderer.setPixelRatio(Math.min(devicePixelRatio,2));
 renderer.outputColorSpace = THREE.SRGBColorSpace;
 renderer.toneMapping = THREE.ACESFilmicToneMapping;
-renderer.setClearColor(0x000000, 0); // transparent für XR-Kamera
+renderer.setClearColor(0x000000, 0);        // transparent
 renderer.setSize(innerWidth, innerHeight);
 app.appendChild(renderer.domElement);
 
-const scene = new THREE.Scene();
-const camera = new THREE.PerspectiveCamera(50, innerWidth/innerHeight, 0.01, 100); camera.position.set(2.5,1.6,3.6);
-const controls = new OrbitControls(camera, renderer.domElement); controls.enableDamping=true; controls.target.set(0,1,0);
+const scene  = new THREE.Scene();           // KEIN scene.background
+const camera = new THREE.PerspectiveCamera(50, innerWidth/innerHeight, 0.01, 100);
+camera.position.set(2.5,1.6,3.6);
+const controls = new OrbitControls(camera, renderer.domElement);
+controls.enableDamping = true; controls.target.set(0,1,0);
 
 const hemi = new THREE.HemisphereLight(0xffffff, 0x334455, 0.9); scene.add(hemi);
 const dir  = new THREE.DirectionalLight(0xffffff, 1.2); dir.position.set(4,6,3); scene.add(dir);
 
-// AR Reticle
-let reticle=null;
-function makeReticle(){
-  const geo = new THREE.RingGeometry(0.07, 0.08, 32).rotateX(-Math.PI/2);
-  const mat = new THREE.MeshBasicMaterial({ color:0x66ccff });
-  const m = new THREE.Mesh(geo, mat); m.matrixAutoUpdate=false; m.visible=false;
-  return m;
-}
-
-// Audio
+// === Audio/Anim State =========================================================
 const listener = new THREE.AudioListener(); camera.add(listener);
 const audio = new THREE.Audio(listener);
 const audioLoader = new THREE.AudioLoader();
-let allowAudio = false; // wird beim OK-Tap gesetzt
 
-// Animation/State
 const clock = new THREE.Clock();
 let mixer=null, actions=[], playing=false;
-let cfg = null, gltf=null, root=null;
-let audioReady = false;
-let muted = false;
-let baseVolume = 0.85;
+let cfg=null, gltf=null, root=null;
 
-let startClicked = false;
-let wantStartAnim = false;
+let baseVolume=.85, audioReady=false, allowAudio=false;
+let startClicked=false;
 
-let xrSession = null, hitTestSource = null, hitTestRequested = false, placed = false;
-let pendingPlacementMatrix = null;
+let xrSession=null, hitTestSource=null, hitTestRequested=false, placed=false;
+let pendingPlacementMatrix=null;
 
-// ── Utils / Config ────────────────────────────────────────────────────────────
+let loaderShownOnce=false; // << nur EINMAL je Session zeigen
+
+// === Defaults + Utils =========================================================
 function deepMerge(a,b){ for(const k in b){ if(b[k] && typeof b[k]==='object' && !Array.isArray(b[k])) a[k]=deepMerge(a[k]||{},b[k]); else a[k]=b[k]; } return a; }
 const DEFAULTS = {
   meta:{ autoplace:true },
   ui:{
-    showGround:false, autocenter:true,
     welcome:{ eyebrow:'ARea – Szene', title:'Willkommen', desc:'Tippe auf OK, um AR zu starten.', cta:'OK', poster:'' },
     controls:{ showPlay:true, showMute:true },
     overlayBackground:'poster'
   },
   camera:{ fov:50, near:.01, far:100, start:[2.5,1.6,3.6], lookAt:[0,1,0] },
-  model:{ url:'', scale:1, rotateY:0, autoFit:true, maxDim:1.2 },
+  model:{
+    url:'', scale:1, rotateY:0,
+    /* Editor-Feld für Realweltgröße:
+       - realWorldMaxDim (Meter): größte Kante des Modells in der realen Welt
+       - realWorldHeight (Meter): Höhe in der realen Welt
+    */
+    realWorldMaxDim:null, realWorldHeight:null, autoFit:true, maxDim:1.2
+  },
   animation:{ enabled:true, clipName:'*', start:'onStart', loop:true, iterations:Infinity, clampWhenFinished:true, crossfade:.2, timeScale:1 },
   audio:{ url:'', autoplay:'withAnimation', loop:true, volume:.85 }
 };
-function resolveRel(u, baseUrl){ if(!u) return u; try{ return new URL(u, baseUrl).href; }catch{ return u; } }
+const resolveRel = (u, base)=> !u ? u : ( ()=>{ try{ return new URL(u,base).href }catch{ return u } } )();
+
+// Loader „einmalig“
+function setLoadingOnce(on, msg){
+  if (on){
+    if (loaderShownOnce) return;            // nicht nochmal anzeigen
+    loaderShownOnce = true;
+    if (msg) loadingText.textContent = msg;
+    show(loadingEl, true);
+  } else {
+    show(loadingEl, false);
+  }
+}
 
 function updateHUD(){
   const hasAnim = actions.length>0;
@@ -205,7 +223,7 @@ function updateHUD(){
   show(hud, (showPlay || showMute));
 }
 
-function playAnim(reset=false){
+function playAll(reset=false){
   if (!actions.length) return;
   actions.forEach(a=>{
     if (reset) a.reset();
@@ -216,24 +234,26 @@ function playAnim(reset=false){
     a.paused = false;
   });
   playing = true;
-  maybePlayAudio(); // startet Audio, wenn Modus 'withAnimation'
+  maybePlayAudio(); // startet Audio, wenn Modus mit Animation
 }
-function pauseAnim(){
+function pauseAll(){
   if (!actions.length) return;
   actions.forEach(a=> a.paused = true);
   playing = false;
   if (cfg.audio?.autoplay === 'withAnimation' && audioReady && audio.isPlaying) audio.stop();
 }
-btnPlay.addEventListener('click', ()=>{ if (!actions.length) return; playing ? pauseAnim() : playAnim(); });
-btnReplay.addEventListener('click', ()=>{ if (!actions.length) return; playAnim(true); });
+btnPlay.addEventListener('click', ()=>{ playing ? pauseAll() : playAll(); });
+btnReplay.addEventListener('click', ()=> playAll(true));
 
 function setMuted(on){
-  muted = !!on;
-  if (audioReady) audio.setVolume(muted ? 0 : baseVolume);
-  btnSound.textContent = muted ? '🔈' : '🔊';
+  if (!audioReady) return;
+  audio.setVolume(on ? 0 : baseVolume);
+  btnSound.textContent = on ? '🔈' : '🔊';
 }
-function toggleSound(){ if (!audioReady) return; setMuted(!muted); }
-btnSound.addEventListener('click', toggleSound);
+btnSound.addEventListener('click', ()=>{
+  const isMuted = audio.getVolume && audio.getVolume()===0;
+  setMuted(!isMuted);
+});
 
 function maybePlayAudio(){
   if (!allowAudio || !audioReady) return;
@@ -244,18 +264,15 @@ function maybePlayAudio(){
   }
 }
 
-// GLTF mit Progress laden (für Lade-Overlay)
-function loadGLTFWithProgress(url, onProgress){
+// GLTF mit Draco + Progress
+function loadGLTF(url){
   const loader = new GLTFLoader(); loader.setCrossOrigin('anonymous');
-  const draco  = new DRACOLoader(); draco.setDecoderPath('https://www.gstatic.com/draco/v1/decoders/'); loader.setDRACOLoader(draco);
-  return new Promise((resolve,reject)=>{
-    loader.load(url, resolve, (e)=>{
-      if (e.total) onProgress?.(e.loaded / e.total);
-    }, reject);
-  });
+  const draco  = new DRACOLoader(); draco.setDecoderPath('https://www.gstatic.com/draco/v1/decoders/');
+  loader.setDRACOLoader(draco);
+  return loader.loadAsync(url);
 }
 
-// ── Config laden & vorbereiten (Preload) ──────────────────────────────────────
+// === Config laden & Assets vorbereiten =======================================
 (async()=>{
   try{
     const r = await fetch(configURL, { mode:'cors', cache:'no-cache' });
@@ -267,80 +284,74 @@ function loadGLTFWithProgress(url, onProgress){
     if (cfg.audio?.url)  cfg.audio.url  = resolveRel(cfg.audio.url,  configURL);
 
     let posterUrl = cfg.ui?.welcome?.poster || j?.target?.previewUrl || j?.poster;
-    if (posterUrl) posterUrl = resolveRel(posterUrl, configURL);
-    else if (sceneId) posterUrl = `${workerBase}/scenes/${encodeURIComponent(sceneId)}/poster.jpg`;
+    posterUrl = posterUrl ? resolveRel(posterUrl, configURL)
+                          : (sceneId ? `${workerBase}/scenes/${encodeURIComponent(sceneId)}/poster.jpg` : null);
 
     document.title = (cfg.ui?.welcome?.title || 'ARea – Scene Viewer');
     wEyebrow.textContent = cfg.ui?.welcome?.eyebrow ?? DEFAULTS.ui.welcome.eyebrow;
     wTitle.textContent   = cfg.ui?.welcome?.title   ?? DEFAULTS.ui.welcome.title;
     wDesc.textContent    = cfg.ui?.welcome?.desc    ?? DEFAULTS.ui.welcome.desc;
     wStart.textContent   = (cfg.ui?.welcome?.cta || 'OK');
-    if (posterUrl) {
-      poster.src = posterUrl;
-      poster.onerror = () => { document.querySelector('.poster').style.display='none'; };
-    } else {
-      document.querySelector('.poster').style.display='none';
-    }
+    if (posterUrl){ poster.src = posterUrl; poster.onerror = ()=>{ document.querySelector('.poster').style.display='none'; }; }
+    else { document.querySelector('.poster').style.display='none'; }
   }catch(e){
-    toast('Config konnte nicht geladen – Defaults genutzt.');
-    cfg = structuredClone(DEFAULTS);
+    toast('Config konnte nicht geladen – Defaults genutzt.'); cfg = structuredClone(DEFAULTS);
   }
 
   // Kamera (Fallback)
-  camera.fov = cfg.camera.fov ?? camera.fov;
-  camera.near= cfg.camera.near ?? camera.near;
-  camera.far = cfg.camera.far ?? camera.far;
+  const c = cfg.camera||{};
+  camera.fov = c.fov ?? camera.fov; camera.near = c.near ?? camera.near; camera.far = c.far ?? camera.far;
   camera.updateProjectionMatrix();
-  if (cfg.camera.start) camera.position.set(...cfg.camera.start);
-  if (cfg.camera.lookAt) controls.target.set(...cfg.camera.lookAt);
+  if (c.start)  camera.position.set(...c.start);
+  if (c.lookAt) controls.target.set(...c.lookAt);
 
   baseVolume = cfg.audio?.volume ?? 0.85;
 
-  // Preload: Modell + Audio (mit Lade-Overlay-Text im Welcome-Stadium optional)
-  let modelProgress = 0;
-  const updateModelMsg = ()=> setLoading(true, `Erlebnis wird geladen … ${Math.round(modelProgress*100)}%`);
-
-  // Wir preladen still; Loader zeigen wir erst nach OK – aber wir tracken Progress schon
-  try {
-    gltf = await loadGLTFWithProgress(cfg.model.url, p=>{ modelProgress = p; });
-  } catch(e) { toast('GLB laden fehlgeschlagen'); console.warn(e); }
+  // Modell laden
+  try { gltf = await loadGLTF(cfg.model.url); }
+  catch(e){ toast('GLB laden fehlgeschlagen'); console.warn(e); }
 
   root = gltf?.scene || new THREE.Group();
   root.traverse(o=>{ if(o.isMesh){ if(o.material?.map) o.material.map.colorSpace = THREE.SRGBColorSpace; }});
-
-  // Auto-Fit, falls Modell sehr groß/klein
-  try{
-    const box = new THREE.Box3().setFromObject(root);
-    const size = new THREE.Vector3(); box.getSize(size);
-    const maxDim = Math.max(size.x,size.y,size.z) || 1;
-    const targetMax = cfg.model?.maxDim ?? 1.2;
-    const scaleFit = cfg.model?.autoFit ? (targetMax / maxDim) : 1;
-    const baseScale = (cfg.model?.scale ?? 1) * scaleFit;
-    root.scale.setScalar(baseScale);
-  }catch{}
-
   root.rotation.y = cfg.model.rotateY||0;
+
+  // Realwelt-Größe: priorisiere explizite Meterangaben aus Editor
+  const box = new THREE.Box3().setFromObject(root);
+  const size = new THREE.Vector3(); box.getSize(size);
+  const maxDim = Math.max(size.x,size.y,size.z) || 1;
+
+  let targetScale = cfg.model.scale ?? 1;
+  if (cfg.model.realWorldHeight){ // Höhe in Meter
+    const curH = size.y || 1;
+    targetScale *= (cfg.model.realWorldHeight / curH);
+  } else if (cfg.model.realWorldMaxDim){ // größte Kante in Meter
+    targetScale *= (cfg.model.realWorldMaxDim / maxDim);
+  } else if (cfg.model.autoFit){        // Fallback-AutoFit
+    const targetMax = cfg.model.maxDim ?? 1.2;
+    targetScale *= (targetMax / maxDim);
+  }
+  root.scale.setScalar(targetScale);
+
   scene.add(root);
 
-  // Animationen: '*' = alle Clips starten/playbar machen
+  // Animationen ('*' → alle)
+  actions = [];
   if (gltf?.animations?.length && cfg.animation.enabled){
     mixer = new THREE.AnimationMixer(root);
     const clips = gltf.animations;
-    const useAll = !cfg.animation.clipName || cfg.animation.clipName === '*';
-    const selClips = useAll ? clips : [ THREE.AnimationClip.findByName(clips, cfg.animation.clipName) || clips[0] ];
-    actions = selClips.map(c => {
+    const pickAll = !cfg.animation.clipName || cfg.animation.clipName==='*';
+    const chosen  = pickAll ? clips : [ THREE.AnimationClip.findByName(clips, cfg.animation.clipName) || clips[0] ];
+    actions = chosen.map(c=> {
       const a = mixer.clipAction(c);
       a.setLoop(cfg.animation.loop ? THREE.LoopRepeat : THREE.LoopOnce, cfg.animation.iterations ?? Infinity);
       a.clampWhenFinished = !!cfg.animation.clampWhenFinished;
       a.timeScale = cfg.animation.timeScale ?? 1;
       return a;
     });
-    console.debug('GLTF animations:', clips.map(a=>a.name));
-  } else {
-    actions = [];
   }
+  updateHUD();
 
-  // Audio-Preload
+  // Audio
   if (cfg.audio?.url){
     try{
       await new Promise((resolve,reject)=>
@@ -348,20 +359,18 @@ function loadGLTFWithProgress(url, onProgress){
       );
     }catch(e){ console.warn('Audio load fail', e); }
   }
-
-  updateHUD(); // erst nach Preload wissen wir, ob Animations-Buttons Sinn machen
 })();
 
-// ── AR Start / Hit-Test / Placement ───────────────────────────────────────────
+// === AR / Hit-Test (ohne Reticle, Autoplace) ==================================
 async function canStartAR(){
   try { return !!(navigator.xr && await navigator.xr.isSessionSupported('immersive-ar')); }
   catch { return false; }
 }
-
 async function startAR(){
   if (!await canStartAR()) return false;
 
-  setLoading(true, 'Initialisiere AR …');
+  // einmaliger Loader bis Platzierung
+  setLoadingOnce(true, 'Scanne Oberfläche …');
 
   xrSession = await navigator.xr.requestSession('immersive-ar', {
     requiredFeatures:['hit-test','local-floor'],
@@ -373,71 +382,55 @@ async function startAR(){
   renderer.xr.setReferenceSpaceType('local-floor');
   await renderer.xr.setSession(xrSession);
 
-  if (!reticle){ reticle = makeReticle(); scene.add(reticle); }
-  hitTestRequested = false; placed = false; pendingPlacementMatrix = null;
-
-  // Tap-Place (falls autoplace false)
+  // Optional: Tap-Place, falls jemand autoplace deaktiviert
   const controller = renderer.xr.getController(0);
   controller.addEventListener('select', ()=>{
-    if (reticle && reticle.visible && !placed) placeModelFromMatrix(reticle.matrix);
+    if (!placed && lastPoseMatrix) placeModelFromMatrix(lastPoseMatrix);
   });
   scene.add(controller);
 
   xrSession.addEventListener('end', ()=>{
     hitTestSource = null; hitTestRequested = false; xrSession = null;
-    setLoading(false);
   });
 
   return true;
 }
 
+let lastPoseMatrix = null;
 function placeModelFromMatrix(mat4){
   if (!root){ pendingPlacementMatrix = mat4.clone(); return; }
   root.matrixAutoUpdate = true;
   root.position.setFromMatrixPosition(mat4);
   placed = true;
 
-  // Start Animation/Audio erst NACH Placement (gewünschtes Verhalten)
-  if (cfg?.animation?.start === 'onStart') playAnim(true);
-  if (cfg?.audio) maybePlayAudio();
-  setLoading(false);
+  // Start erst NACH Platzierung
+  if (cfg?.animation?.start === 'onStart') playAll(true);
+  maybePlayAudio();
+
+  // Loader weg & nicht wieder anzeigen
+  setLoadingOnce(false);
 }
 
-// ── Public Start (OK-Button) ──────────────────────────────────────────────────
+// === OK (Poster schließen & starten) =========================================
 window.__start = async function(){
   startClicked = true;
   allowAudio = true; // Autoplay-Freigabe durch User-Tap
   try { listener?.context?.resume?.(); } catch {}
 
-  updateHUD();
   show(welcome,false);
 
-  if (cfg?.ui?.overlayBackground === 'camera'){ startCameraPreview(); }
-
-  // Zeige Loader-Overlay JETZT (nach Poster), bis AR + Platzierung ready
-  setLoading(true, 'Erlebnis wird geladen …');
+  // optional: Kamerapreview im Overlay (kein AR)
+  // if (cfg?.ui?.overlayBackground === 'camera'){ startCameraPreview(); }
 
   const arStarted = await startAR().catch(()=>false);
   if (!arStarted){
-    // Fallback: kein AR → kein Hit-Test; wir verstecken Loader und starten ggf. direkt
-    setLoading(false);
-    if (cfg?.animation?.start === 'onStart') playAnim(true);
+    // Fallback ohne AR → kein Loader nötig
+    if (cfg?.animation?.start === 'onStart') playAll(true);
     maybePlayAudio();
   }
 };
 
-// Optional: Overlay-Kamera (reiner Videostream, kein AR)
-welcome.addEventListener('pointerdown', (e)=>{
-  if (e.target !== wStart && cfg?.ui?.overlayBackground === 'camera') startCameraPreview();
-});
-function startCameraPreview(){
-  if (camPreview.dataset.on === '1') return;
-  navigator.mediaDevices?.getUserMedia?.({ video:{ facingMode:'environment' }, audio:false })
-    .then(s=>{ camPreview.srcObject = s; camPreview.dataset.on='1'; show(camPreview, true); })
-    .catch(()=>{});
-}
-
-// ── Render / XR-HitTest Loop ─────────────────────────────────────────────────
+// === Render / Hit-Test Loop ===================================================
 renderer.setAnimationLoop((t, frame)=>{
   const dt = clock.getDelta();
   mixer?.update(dt);
@@ -447,8 +440,6 @@ renderer.setAnimationLoop((t, frame)=>{
     const session  = renderer.xr.getSession();
 
     if (!hitTestRequested){
-      // Während wir auf Hit-Test-Quelle warten, zeige „Fläche suchen …“
-      setLoading(true, 'Suche Oberfläche …');
       session.requestReferenceSpace('viewer').then((viewerSpace)=>{
         session.requestHitTestSource({ space: viewerSpace }).then(src => { hitTestSource = src; });
       });
@@ -460,17 +451,12 @@ renderer.setAnimationLoop((t, frame)=>{
       const hits = frame.getHitTestResults(hitTestSource);
       if (hits.length){
         const pose = hits[0].getPose(refSpace);
-        if (!reticle){ reticle = makeReticle(); scene.add(reticle); }
-        reticle.visible = true;
-        reticle.matrix.fromArray(pose.transform.matrix);
+        lastPoseMatrix = new THREE.Matrix4().fromArray(pose.transform.matrix);
 
         if (!placed && (cfg?.meta?.autoplace ?? true)){
-          placeModelFromMatrix(new THREE.Matrix4().fromArray(pose.transform.matrix));
-        } else {
-          // reticle sichtbar → Oberfläche gefunden
-          setLoading(false);
+          placeModelFromMatrix(lastPoseMatrix);
         }
-      } else if (reticle){ reticle.visible = false; setLoading(true, 'Suche Oberfläche …'); }
+      }
     }
   } else {
     controls.update();
@@ -486,13 +472,6 @@ renderer.setAnimationLoop((t, frame)=>{
 
 addEventListener('resize', ()=>{
   camera.aspect=innerWidth/innerHeight; camera.updateProjectionMatrix(); renderer.setSize(innerWidth, innerHeight);
-});
-
-// Tastatur-Guard (nur Konsistenz)
-addEventListener('keydown', (e)=>{
-  if ((e.key||'').toLowerCase() !== 't') return;
-  const el = e.target;
-  if (el && el.closest && el.closest('input,textarea,select,[contenteditable="true"]')) e.stopPropagation();
 });
 </script>
 </body>
