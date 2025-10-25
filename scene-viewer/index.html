@@ -1,370 +1,127 @@
 <!doctype html>
 <html lang="de">
 <head>
-<meta charset="utf-8"/>
-<meta name="viewport" content="width=device-width, initial-scale=1"/>
-<title>ARea – Scene Viewer</title>
-<style>
-  :root{ --bg:#0e1116; --panel:#111828; --panel2:#192339; --text:#e9ecf5; --muted:#9fb3d9; --border:#24314a; }
-  html,body{height:100%;margin:0;background:var(--bg);color:var(--text);font:16px/1.4 system-ui,Segoe UI,Inter,Roboto,Arial}
-  #app{position:fixed;inset:0}
-  canvas{display:block;width:100%;height:100%}
-  /* Kamera-Preview für Overlay (optional) */
-  #camPreview{position:fixed;inset:0;object-fit:cover;z-index:0;display:none}
-  .overlay{position:fixed;inset:0;display:grid;place-items:center;padding:24px;background:linear-gradient(180deg, rgba(14,17,22,.9), rgba(14,17,22,.96));z-index:2}
-  .card{width:min(880px,92vw);border:1px solid var(--border);border-radius:20px;overflow:hidden;background:linear-gradient(180deg,#0b1220,#0e1422);box-shadow:0 12px 40px rgba(0,0,0,.4);display:grid;grid-template-columns:320px 1fr}
-  .poster{background:#0a1220;min-height:260px}
-  .poster img{width:100%;height:100%;object-fit:cover;display:block}
-  .body{padding:22px}
-  .eyebrow{font-size:12px;letter-spacing:.18em;text-transform:uppercase;color:var(--muted)}
-  h1{font-size:28px;margin:.35rem 0 .4rem;line-height:1.2}
-  p{color:#cbd5e1;margin:.2rem 0 .8rem}
-  .row{display:flex;gap:12px;align-items:center;flex-wrap:wrap;margin-top:.6rem}
-  .btn{cursor:pointer;border:1px solid var(--border);background:linear-gradient(180deg,#1a2337,#162033);color:var(--text);padding:10px 14px;border-radius:12px;font-weight:700}
-  .hud{position:fixed;left:50%;transform:translateX(-50%);bottom:16px;display:flex;gap:10px;background:rgba(14,17,22,.6);border:1px solid var(--border);border-radius:999px;padding:8px;backdrop-filter: blur(6px);z-index:1}
-  .hud button{all:unset;cursor:pointer;padding:8px 12px;border-radius:10px}
-  .toast{position:fixed;top:12px;right:12px;background:#111828;border:1px solid #24314a;color:#dbe1f1;padding:8px 12px;border-radius:10px;font-size:13px;box-shadow:0 8px 24px rgba(0,0,0,.25);z-index:3}
-  @media (max-width:860px){ .card{grid-template-columns:1fr} .poster{max-height:40vh} }
-</style>
-<script type="importmap">
-{
-  "imports": {
-    "three": "https://unpkg.com/three@0.160.0/build/three.module.js",
-    "three/addons/": "https://unpkg.com/three@0.160.0/examples/jsm/"
-  }
-}
-</script>
+  <meta charset="utf-8"/>
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover"/>
+  <title>Surface AR – Native (Full-Bleed, Animation)</title>
+  <script type="module" src="https://unpkg.com/@google/model-viewer/dist/model-viewer.min.js"></script>
+  <style>
+    :root{color-scheme:dark light}
+    *,*::before,*::after{box-sizing:border-box}
+    html,body{margin:0;height:100%;background:#000;font-family:system-ui,-apple-system,Segoe UI,Roboto,Helvetica,Arial}
+    model-viewer{position:fixed; inset:0; width:100vw; height:100svh; display:block; background:#000}
+    button[slot="ar-button"]{
+      position:absolute; left:max(12px,env(safe-area-inset-left)); top:max(12px,env(safe-area-inset-top));
+      padding:.75rem 1rem; border-radius:12px; border:1px solid rgba(255,255,255,.25); background:#111; color:#fff
+    }
+    #err{position:fixed;left:12px;top:12px;z-index:9;background:#b00020;color:#fff;padding:8px 10px;border-radius:8px;display:none;font:12px/1.35 monospace;max-width:min(92vw,680px);white-space:pre-wrap}
+  </style>
 </head>
 <body>
-<!-- optional: Kamera hinter Overlay -->
-<video id="camPreview" autoplay muted playsinline></video>
+  <div id="err"></div>
 
-<div id="app"></div>
+  <model-viewer id="mv"
+    src="https://modelviewer.dev/shared-assets/models/Astronaut.glb"
+    ar ar-modes="scene-viewer quick-look webxr"
+    camera-controls autoplay
+    environment-image="https://modelviewer.dev/shared-assets/environments/neutral.hdr"
+    exposure="1" shadow-intensity="1"
+    interaction-prompt="none"
+    camera-orbit="0deg 70deg auto"
+    camera-target="auto"
+    field-of-view="30deg"
+    poster="">
+    <button slot="ar-button">In AR öffnen</button>
+  </model-viewer>
 
-<!-- Willkommen -->
-<div id="welcome" class="overlay" style="display:grid">
-  <div class="card">
-    <div class="poster"><img id="welcomePoster" alt="Poster"></div>
-    <div class="body">
-      <div class="eyebrow" id="welcomeEyebrow">ARea – Szene</div>
-      <h1 id="welcomeTitle">Willkommen</h1>
-      <p id="welcomeDesc">Diese Szene enthält Animation und ggf. Audio. Klicke auf OK, um zu starten.</p>
-      <div class="row">
-        <!-- Fallback: onclick ruft __start auf, falls Listener nicht registriert wäre -->
-        <button id="welcomeStart" class="btn" onclick="window.__start && window.__start()">OK</button>
-        <span class="muted" id="welcomeHint" style="color:#9fb3d9;font-size:13px">Audio startet ggf. nach Klick (Autoplay-Policy)</span>
-      </div>
-    </div>
-  </div>
-</div>
+<script>
+  const qs = new URLSearchParams(location.search);
+  let scene = (qs.get('scene') || qs.get('src') || '').trim();
+  const workerBase = (qs.get('base') || 'https://area-publish.area-webar.workers.dev').replace(/\/$/, '');
+  const overrideGlb  = (qs.get('glb')  || '').trim();
+  const overrideUsdz = (qs.get('usdz') || '').trim();
 
-<!-- HUD (standardmäßig unsichtbar; erst nach OK & wenn ui.showHud===true) -->
-<div id="hud" class="hud" style="display:none">
-  <button id="btnPlay" title="Play/Pause">▶︎/⏸</button>
-  <button id="btnReplay" title="Neu starten">↻</button>
-  <button id="btnSound" title="Ton an/aus">🔊</button>
-</div>
+  const isHttp = (u)=> /^https?:\/\//i.test(u);
+  const isDataOrBlob = (u)=> u.startsWith('data:') || u.startsWith('blob:');
+  const endsWithAny = (u,exts)=> exts.some(ext=> u.toLowerCase().endsWith(ext));
 
-<div id="toasts" style="display:grid;gap:10px;position:fixed;top:12px;right:12px"></div>
+  let SCENE_GLB = '';
+  let SCENE_JSON = '';
 
-<script type="module">
-import * as THREE from 'three';
-import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
-import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
-
-const $ = s => document.querySelector(s);
-const app   = $('#app');
-const toasts= $('#toasts');
-const welcome = $('#welcome'),
-      poster  = $('#welcomePoster'),
-      wTitle  = $('#welcomeTitle'),
-      wDesc   = $('#welcomeDesc'),
-      wStart  = $('#welcomeStart'),
-      wEyebrow= $('#welcomeEyebrow');
-const hud = $('#hud'),
-      btnPlay  = $('#btnPlay'),
-      btnReplay= $('#btnReplay'),
-      btnSound = $('#btnSound');
-const camPreview = $('#camPreview');
-
-function toast(m){ const d=document.createElement('div'); d.className='toast'; d.textContent=m; toasts.appendChild(d); setTimeout(()=>d.remove(),2600); }
-const show = (el, on)=>{ el && (el.style.display = on ? '' : 'none'); };
-
-// ── Query / Config URL ─────────────────────────────────────────────────────────
-const qs = new URLSearchParams(location.search);
-const workerBase = (qs.get('base') || 'https://area-publish.area-webar.workers.dev').replace(/\/$/,'');
-const sceneId = (qs.get('scene') || qs.get('id') || '').trim();
-const src = (qs.get('src') || '').trim();
-const configURL = src || (sceneId ? `${workerBase}/scenes/${encodeURIComponent(sceneId)}/scene.json` : '');
-if (!configURL){ toast('Keine scene.json – ?scene=ID oder ?src=URL verwenden.'); }
-
-// ── THREE Setup ───────────────────────────────────────────────────────────────
-const renderer = new THREE.WebGLRenderer({ antialias:true, powerPreference:'high-performance' });
-renderer.setPixelRatio(Math.min(devicePixelRatio,2));
-renderer.outputColorSpace = THREE.SRGBColorSpace;
-renderer.toneMapping = THREE.ACESFilmicToneMapping;
-renderer.setSize(innerWidth, innerHeight);
-app.appendChild(renderer.domElement);
-
-const scene = new THREE.Scene(); scene.background = new THREE.Color('#0b1020');
-const camera = new THREE.PerspectiveCamera(50, innerWidth/innerHeight, 0.1, 100); camera.position.set(2.5,1.6,3.6);
-const controls = new OrbitControls(camera, renderer.domElement); controls.enableDamping=true; controls.target.set(0,1,0);
-
-const hemi = new THREE.HemisphereLight(0xffffff, 0x334455, 0.9); scene.add(hemi);
-const dir  = new THREE.DirectionalLight(0xffffff, 1.2); dir.position.set(4,6,3); scene.add(dir);
-
-const ground = new THREE.Mesh(new THREE.PlaneGeometry(40,40), new THREE.MeshStandardMaterial({ color:0x0d1323, roughness:.9, metalness:0 }));
-ground.rotation.x = -Math.PI/2; scene.add(ground);
-
-// Audio
-const listener = new THREE.AudioListener(); camera.add(listener);
-const audio = new THREE.Audio(listener);
-const audioLoader = new THREE.AudioLoader();
-
-// Animation state
-const clock = new THREE.Clock();
-let mixer=null, clip=null, action=null, playing=false, playCount=0;
-let cfg = null, gltf=null, root=null;
-let audioReady = false;
-let muted = false;
-let baseVolume = 0.85;
-
-let startClicked = false;
-let wantStartAnim = false;
-let deferredClick = false;
-
-// WebXR AR state
-let xrSession = null, hitTestSource = null, hitTestRequested = false, reticle = null, placed = false;
-let pendingPlacementMatrix = null;
-
-function makeReticle(){
-  const geo = new THREE.RingGeometry(0.07, 0.08, 32).rotateX(-Math.PI/2);
-  const mat = new THREE.MeshBasicMaterial({ color:0x66ccff });
-  const m = new THREE.Mesh(geo, mat); m.matrixAutoUpdate=false; m.visible=false;
-  return m;
-}
-
-async function canStartAR(){
-  try { return !!(navigator.xr && await navigator.xr.isSessionSupported('immersive-ar')); }
-  catch { return false; }
-}
-
-async function startAR(){
-  const supported = await canStartAR();
-  if (!supported) return false;
-
-  xrSession = await navigator.xr.requestSession('immersive-ar', { requiredFeatures:['hit-test','local-floor'] });
-  renderer.xr.enabled = true;
-  renderer.xr.setReferenceSpaceType('local-floor');
-  await renderer.xr.setSession(xrSession);
-
-  if (!reticle){ reticle = makeReticle(); scene.add(reticle); }
-  ground.visible = false; // hide ground in AR
-  hitTestRequested = false; placed = false; pendingPlacementMatrix = null;
-
-  xrSession.addEventListener('end', ()=>{
-    hitTestSource = null; hitTestRequested = false; xrSession = null;
-    ground.visible = !!(cfg?.ui?.showGround);
-  });
-
-  return true;
-}
-
-function placeModelFromMatrix(mat4){
-  if (!root) { pendingPlacementMatrix = mat4.clone(); return; }
-  const pos = new THREE.Vector3().setFromMatrixPosition(mat4);
-  root.position.copy(pos);
-  placed = true;
-  // Start animation if configured
-  if (cfg?.animation?.start === 'onStart'){
-    if (action) playAnim(true); else wantStartAnim = true;
-  }
-}
-
-// Public Start
-window.__start = async function(){
-  startClicked = true;
-  try { listener?.context?.resume?.(); } catch {}
-
-  // HUD buttons visibility based on ui.controls flags
-  const showPlay = !!cfg?.ui?.controls?.showPlay;
-  const showMute = !!cfg?.ui?.controls?.showMute && !!cfg?.audio?.url;
-  btnPlay.style.display  = showPlay ? '' : 'none';
-  btnReplay.style.display= showPlay ? '' : 'none';
-  btnSound.style.display = showMute ? '' : 'none';
-  show(hud, (showPlay || showMute));
-
-  show(welcome,false);
-
-  // Try AR; fallback if not supported
-  const arStarted = await startAR().catch(()=>false);
-  if (!arStarted){
-    // Non-AR fallback is already active (OrbitControls); start auto animation if set
-    if (cfg?.animation?.start === 'onStart') {
-      if (action) playAnim(true); else wantStartAnim = true;
+  if (overrideGlb) {
+    SCENE_GLB = overrideGlb;
+  } else if (scene) {
+    if (isDataOrBlob(scene)) {
+      SCENE_JSON = scene;
+    } else if (isHttp(scene)) {
+      if (endsWithAny(scene, ['.glb','.gltf'])) SCENE_GLB = scene;
+      else SCENE_JSON = scene;
+    } else {
+      const id = scene.replace(/\/+$/,'');
+      SCENE_GLB  = `${workerBase}/scenes/${encodeURIComponent(id)}/scene.glb`;
+      SCENE_JSON = `${workerBase}/scenes/${encodeURIComponent(id)}/scene.json`;
     }
-    // Optional: start audio if autoplay 'auto'
-    if (cfg?.audio?.autoplay === 'auto') playSound();
-  }
-  // If autoplay audio with animation, it will start together with animation.
-};
-
-// Welcome overlay camera preview listener remains
-// ...existing overlay pointer handlers...
-
-// Controls handlers (unchanged)
-function playAnim(reset=false){
-  if (!action) return;
-  if (reset){ action.reset(); playCount=0; }
-  action.enabled = true;
-  action.fadeIn(cfg.animation?.crossfade || 0).play();
-  action.paused = false;
-  playing = true;
-  if (cfg.audio?.autoplay === 'withAnimation' && audioReady && !audio.isPlaying){
-    audio.play();
-  }
-}
-function pauseAnim(){
-  if (!action) return;
-  action.paused = true; playing = false;
-  if (cfg.audio?.autoplay === 'withAnimation' && audioReady && audio.isPlaying){
-    audio.stop();
-  }
-}
-function setMuted(on){
-  muted = !!on;
-  if (audioReady) audio.setVolume(muted ? 0 : baseVolume);
-  btnSound.textContent = muted ? '🔈' : '🔊';
-}
-function toggleSound(){ if (!audioReady) return; setMuted(!muted); }
-function playSound(){
-  if (!audioReady) return;
-  listener.context.resume?.();
-  setMuted(false);
-  if (!audio.isPlaying) audio.play();
-}
-btnPlay.addEventListener('click', ()=>{ if (!action) return; playing ? pauseAnim() : playAnim(); });
-btnReplay.addEventListener('click', ()=>{ if (!action) return; playAnim(true); });
-btnSound.addEventListener('click', toggleSound);
-
-
-// Load config and assets
-(async()=>{
-  // ...existing config load/merge...
-  // Abs. URLs
-  // ...existing URL resolving...
-
-  // UI Welcome fill
-  // ...existing UI fill...
-
-  // Camera/scene
-  // ...existing camera/ground setup...
-  baseVolume = cfg.audio?.volume ?? 0.85;
-
-  // GLB laden
-  const loader = new GLTFLoader(); loader.setCrossOrigin('anonymous');
-  try { gltf = await loader.loadAsync(cfg.model.url); }
-  catch(e) { toast('GLB laden fehlgeschlagen'); console.warn(e); }
-
-  root = gltf?.scene || new THREE.Group();
-  root.traverse(o=>{ if(o.isMesh){ if(o.material?.map) o.material.map.colorSpace = THREE.SRGBColorSpace; }});
-  root.scale.setScalar(cfg.model.scale||1); root.rotation.y = cfg.model.rotateY||0;
-  scene.add(root);
-
-  // Auto-Center (only for non-AR fallback)
-  if (cfg.ui?.autocenter && root){
-    const box = new THREE.Box3().setFromObject(root);
-    const size = new THREE.Vector3(); box.getSize(size);
-    const center = new THREE.Vector3(); box.getCenter(center);
-    root.position.x += -center.x; root.position.z += -center.z; root.position.y += -box.min.y;
-    const radius = Math.max(size.x,size.y,size.z)*0.6; const idealZ = radius/Math.tan((camera.fov*Math.PI/180)/2);
-    camera.position.set(idealZ*0.8, radius*0.8, idealZ*1.1); controls.target.set(0, size.y*0.5, 0);
   }
 
-  // Animation
-  if (gltf?.animations?.length && cfg.animation.enabled){
-    mixer = new THREE.AnimationMixer(root);
-    clip = cfg.animation.clipName
-      ? THREE.AnimationClip.findByName(gltf.animations, cfg.animation.clipName) || gltf.animations[0]
-      : gltf.animations[0];
-    action = mixer.clipAction(clip);
-    action.clampWhenFinished = !!cfg.animation.clampWhenFinished;
-    action.timeScale = cfg.animation.timeScale ?? 1;
-    if (cfg.animation.loop){ action.setLoop(THREE.LoopRepeat, Infinity); }
-    else { action.setLoop(THREE.LoopOnce, 0); }
-    mixer.addEventListener('finished', ()=>{
-      if(cfg.animation.loop) return;
-      if(cfg.animation.iterations && Number.isFinite(cfg.animation.iterations)){
-        playCount++;
-        if (playCount < cfg.animation.iterations){ action.reset(); action.play(); }
-        else { playing=false; }
+  const showErr = (m)=>{ const el=document.getElementById('err'); el.textContent=m; el.style.display='block'; };
+
+  const mv = document.getElementById('mv');
+  let cfg = { model:{ url: SCENE_GLB || "https://modelviewer.dev/shared-assets/models/Astronaut.glb", usdzUrl:null, animation:"*" },
+              target:{ previewUrl:null } };
+
+  (async () => {
+    try {
+      // 1) Wenn GLB ermittelt → direkt setzen (mit .glb-Hint)
+      if (SCENE_GLB) {
+        mv.src = SCENE_GLB + '#.glb';
       }
-    });
-    if (wantStartAnim) { playAnim(true); wantStartAnim=false; }
-    if (deferredClick) { playAnim(true); deferredClick=false; }
-  }
 
-  // Audio
-  if (cfg.audio?.url){
-    try{
-      await new Promise((resolve,reject)=>
-        audioLoader.load(cfg.audio.url, (buf)=>{ audio.setBuffer(buf); audio.setLoop(!!cfg.audio.loop); audio.setVolume(baseVolume); audioReady=true; resolve(); }, undefined, reject)
-      );
-    }catch(e){ console.warn('Audio load fail', e); }
-  }
-})();
+      // 2) Optional JSON laden
+      if (SCENE_JSON) {
+        const r = await fetch(SCENE_JSON, { cache: 'no-cache' });
+        if (!r.ok) throw new Error(r.status + ' ' + r.statusText);
+        const j = await r.json();
+        if (j.model)  cfg.model  = Object.assign(cfg.model,  j.model);
+        if (j.target) cfg.target = Object.assign(cfg.target, j.target);
 
-// ── Render / XR hit-test loop
-renderer.setAnimationLoop((t, frame)=>{
-  const dt = clock.getDelta();
-  mixer?.update(dt);
-
-  if (renderer.xr.isPresenting && frame){
-    const refSpace = renderer.xr.getReferenceSpace();
-    const session  = renderer.xr.getSession();
-
-    if (!hitTestRequested){
-      session.requestReferenceSpace('viewer').then((viewerSpace)=>{
-        session.requestHitTestSource({ space: viewerSpace }).then(src => { hitTestSource = src; });
-      });
-      session.addEventListener('end', ()=>{ hitTestRequested=false; hitTestSource=null; });
-      hitTestRequested = true;
-    }
-
-    if (hitTestSource){
-      const hits = frame.getHitTestResults(hitTestSource);
-      if (hits.length){
-        const pose = hits[0].getPose(refSpace);
-        if (reticle){
-          reticle.visible = true;
-          reticle.matrix.fromArray(pose.transform.matrix);
+        if (!SCENE_GLB && cfg.model.url) {
+          mv.src = cfg.model.url + '#.glb';
         }
-        if (!placed){
-          placeModelFromMatrix(new THREE.Matrix4().fromArray(pose.transform.matrix));
-        }
-      } else if (reticle){ reticle.visible = false; }
+      }
+
+      // 3) USDZ/Poster
+      const usdz = overrideUsdz || cfg.model.usdzUrl;
+      if (usdz) mv.setAttribute('ios-src', usdz); else mv.removeAttribute('ios-src');
+      if (cfg.target?.previewUrl) mv.setAttribute('poster', cfg.target.previewUrl);
+
+    } catch (e) {
+      showErr('scene.json konnte nicht geladen werden: ' + e.message);
+      console.error(e);
     }
-  } else {
-    controls.update();
-  }
+  })();
 
-  // Apply pending placement if root arrived after hit
-  if (pendingPlacementMatrix && root){
-    placeModelFromMatrix(pendingPlacementMatrix);
-    pendingPlacementMatrix = null;
-  }
+  mv.addEventListener('load', ()=>{
+    mv.cameraOrbit = '0deg 70deg auto';
+    mv.cameraTarget = 'auto';
+    mv.fieldOfView  = '30deg';
+    mv.jumpCameraToGoal();
 
-  renderer.render(scene, camera);
-});
+    const names = mv.availableAnimations || [];
+    const sel = cfg.model.animation;
 
-addEventListener('resize', ()=>{
-  camera.aspect=innerWidth/innerHeight; camera.updateProjectionMatrix(); renderer.setSize(innerWidth, innerHeight);
-});
-
-// Guard „T“ while typing – no theme toggling here, but keep guard for consistency
-window.addEventListener('keydown', (e)=>{
-  if ((e.key||'').toLowerCase() !== 't') return;
-  const el = e.target;
-  if (el && el.closest && el.closest('input,textarea,select,[contenteditable="true"]')) e.stopPropagation();
-});
+    if (sel === 'none'){ mv.autoplay=false; mv.animationName=null; return; }
+    if (sel === '*' || sel==null){
+      if (names.length){ mv.animationName = names[0]; mv.autoplay=true; }
+      return;
+    }
+    if (typeof sel === 'string'){
+      if (names.includes(sel)){ mv.animationName = sel; mv.autoplay=true; }
+      else if (names.length){ mv.animationName = names[0]; mv.autoplay=true; }
+      return;
+    }
+    const idx = Math.max(0, Math.min(names.length-1, parseInt(sel||0,10)));
+    if (names[idx]){ mv.animationName = names[idx]; mv.autoplay=true; }
+  });
 </script>
+</body>
+</html>
