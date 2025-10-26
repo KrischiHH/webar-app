@@ -41,7 +41,7 @@
          padding:8px 12px;border-radius:10px;font-size:13px;box-shadow:0 8px 24px rgba(0,0,0,.25);z-index:5}
 
   /* === Loader (zentriert, kein Blau, einmalig) === */
-  #loading.overlay{ z-index: 4; }
+  #loading{ display:none !important; }
   .loader-wrap{display:flex;flex-direction:column;align-items:center;justify-content:center;gap:10px;
                width:min(420px,86vw); padding:24px; border:1px solid var(--border); border-radius:16px;
                background:linear-gradient(180deg,#0b1220,#0e1422)}
@@ -74,20 +74,9 @@
 </script>
 
   <style>
-/* Splash/Loader neutralisieren */
-.ar-splash, .loading-overlay {
-  background: transparent !important;
-  box-shadow: none !important;
-  backdrop-filter: none !important;
-}
-/* Primär-Button auf Splash abschalten/entstilisieren */
-.ar-splash .btn-primary {
-  background: transparent !important;
-  border: 1px solid transparent !important;
-  color: inherit !important;
-  box-shadow: none !important;
-}
+/* keine Viewer-Overrides – alter Loader bleibt unverändert */
 </style>
+
   
 </head>
 <body>
@@ -220,15 +209,10 @@ const resolveRel = (u, base)=> !u ? u : ( ()=>{ try{ return new URL(u,base).href
 
 // Loader „einmalig“
 function setLoadingOnce(on, msg){
-  if (on){
-    if (loaderShownOnce) return;            // nicht nochmal anzeigen
-    loaderShownOnce = true;
-    if (msg) loadingText.textContent = msg;
-    show(loadingEl, true);
-  } else {
-    show(loadingEl, false);
-  }
+  // Deaktiviert: wir verwenden wieder den vorherigen/alten Loader.
+  show(loadingEl, false);
 }
+
 
 function updateHUD(){
   const hasAnim = actions.length>0;
@@ -286,6 +270,7 @@ function maybePlayAudio(){
   }
 }
 
+
 // GLTF mit Draco + Progress
 function loadGLTF(url){
   const loader = new GLTFLoader(); loader.setCrossOrigin('anonymous');
@@ -338,23 +323,30 @@ function loadGLTF(url){
   root.rotation.y = cfg.model.rotateY||0;
 
   // Realwelt-Größe: priorisiere explizite Meterangaben aus Editor
-  const box = new THREE.Box3().setFromObject(root);
-  const size = new THREE.Vector3(); box.getSize(size);
-  const maxDim = Math.max(size.x,size.y,size.z) || 1;
+const box = new THREE.Box3().setFromObject(root);
+const size = new THREE.Vector3(); box.getSize(size);
+const maxDim = Math.max(size.x,size.y,size.z) || 1;
 
-  let targetScale = cfg.model.scale ?? 1;
-  if (cfg.model.realWorldHeight){ // Höhe in Meter
-    const curH = size.y || 1;
-    targetScale *= (cfg.model.realWorldHeight / curH);
-  } else if (cfg.model.realWorldMaxDim){ // größte Kante in Meter
-    targetScale *= (cfg.model.realWorldMaxDim / maxDim);
-  } else if (cfg.model.autoFit){        // Fallback-AutoFit
-    const targetMax = cfg.model.maxDim ?? 1.2;
-    targetScale *= (targetMax / maxDim);
-  }
-  root.scale.setScalar(targetScale);
+// HARTES Zielmaß (z. B. 0.6 m größte Kante)
+const TARGET_MAX = 0.6;
 
-  scene.add(root);
+// Optional: Felder aus cfg respektieren, ansonsten hartes Ziel
+let targetScale = cfg.model?.scale ?? 1;
+if (cfg.model?.realWorldHeight){               // Höhe in m
+  const curH = size.y || 1;
+  targetScale *= (cfg.model.realWorldHeight / curH);
+} else if (cfg.model?.realWorldMaxDim){        // größte Kante in m
+  targetScale *= (cfg.model.realWorldMaxDim / maxDim);
+} else {
+  targetScale *= (TARGET_MAX / maxDim);        // Harter Fallback
+}
+root.scale.setScalar(targetScale);
+
+// optionale Y-Vorrotation aus Config
+root.rotation.y = cfg.model?.rotateY || 0;
+
+scene.add(root);
+
 
   // Animationen ('*' → alle)
   actions = [];
@@ -391,7 +383,7 @@ async function canStartAR(){
 async function startAR(){
   if (!await canStartAR()) return false;
 
-  // einmaliger Loader bis Platzierung
+  // Einmal anzeigen (wird in C) wieder neutralisiert, falls du den alten Loader willst)
   setLoadingOnce(true, 'Scanne Oberfläche …');
 
   xrSession = await navigator.xr.requestSession('immersive-ar', {
@@ -404,7 +396,7 @@ async function startAR(){
   renderer.xr.setReferenceSpaceType('local-floor');
   await renderer.xr.setSession(xrSession);
 
-  // Optional: Tap-Place, falls jemand autoplace deaktiviert
+  // Tap-Place zusätzlich erlauben
   const controller = renderer.xr.getController(0);
   controller.addEventListener('select', ()=>{
     if (!placed && lastPoseMatrix) placeModelFromMatrix(lastPoseMatrix);
@@ -414,6 +406,16 @@ async function startAR(){
   xrSession.addEventListener('end', ()=>{
     hitTestSource = null; hitTestRequested = false; xrSession = null;
   });
+
+  // Fallback: Wenn nach 2.5s kein Place → trotzdem Animation/Audio starten
+  window.__placeFallbackId = setTimeout(()=>{
+    if (!placed){
+      if (cfg?.animation?.start === 'onStart') playAll(true);
+      maybePlayAudio();
+      setLoadingOnce(false);
+    }
+    window.__placeFallbackId = null;
+  }, 2500);
 
   return true;
 }
@@ -441,11 +443,18 @@ function placeModelFromMatrix(mat4){
 
   placed = true;
 
+  // Falls ein Fallback-Timer aktiv war: stoppen
+  if (window.__placeFallbackId){
+    clearTimeout(window.__placeFallbackId);
+    window.__placeFallbackId = null;
+  }
+
   // Start erst nach Platzierung
   if (cfg?.animation?.start === 'onStart') playAll(true);
-  maybePlayAudio();              // spielt bei autoplay: 'onPlace' jetzt korrekt
-  setLoadingOnce(false);         // Loader dauerhaft aus
+  maybePlayAudio();              // spielt bei autoplay: 'onPlace' / 'withAnimation'
+  setLoadingOnce(false);         // Custom-Loader AUS
 }
+
 
 
 // === OK (Poster schließen & starten) =========================================
