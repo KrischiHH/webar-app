@@ -40,28 +40,46 @@
   .toast{position:fixed;top:12px;right:12px;background:#111828;border:1px solid #24314a;color:#dbe1f1;
          padding:8px 12px;border-radius:10px;font-size:13px;box-shadow:0 8px 24px rgba(0,0,0,.25);z-index:5}
 
-  /* === Loader (zentriert, kein Blau, einmalig) === */
-  #loading{ display:none !important; }
-  .loader-wrap{display:flex;flex-direction:column;align-items:center;justify-content:center;gap:10px;
-               width:min(420px,86vw); padding:24px; border:1px solid var(--border); border-radius:16px;
-               background:linear-gradient(180deg,#0b1220,#0e1422)}
-  .loader-title{font-weight:700; letter-spacing:.03em}
-  .loader{
-    width:110px;height:18px;position:relative;border-radius:9px;overflow:hidden;border:1px solid #2a3350;
-    background:#0f1526;
+  /* -------------------- WiFi-Loader (Overlay) -------------------- */
+  .scan-loader{
+    position:fixed; inset:0; display:grid; place-items:center;
+    z-index:5; pointer-events:none;
+    transition:opacity .25s ease, visibility .25s ease;
   }
-  .loader-bar{
-    position:absolute;left:0;top:0;bottom:0;width:36%;
-    background:linear-gradient(90deg,#9A79FF,#D1C2FF);
-    animation:loadbar 1.2s ease-in-out infinite;
-  }
-  @keyframes loadbar{
-    0%{ transform:translateX(-100%) }
-    50%{ transform:translateX(30%) }
-    100%{ transform:translateX(220%) }
-  }
+  .scan-loader.hidden{ opacity:0; visibility:hidden; }
 
-  @media (max-width:860px){ .card{grid-template-columns:1fr} .poster{max-height:40vh} }
+  /* Theme-Anbindung (Fallbacks, falls --accent fehlt) */
+  #wifi-loader{
+    --front-color: var(--accent, #7dd3fc);
+    --back-color: color-mix(in srgb, var(--accent, #7dd3fc) 25%, transparent);
+    --text-color: var(--muted, #9fb3d9);
+    width:64px; height:64px; border-radius:50px; position:relative;
+    display:flex; justify-content:center; align-items:center;
+  }
+  #wifi-loader svg{ position:absolute; display:flex; justify-content:center; align-items:center; }
+  #wifi-loader svg circle{ position:absolute; fill:none; stroke-width:6px; stroke-linecap:round; stroke-linejoin:round; transform:rotate(-100deg); transform-origin:center; }
+  #wifi-loader svg circle.back{ stroke:var(--back-color); }
+  #wifi-loader svg circle.front{ stroke:var(--front-color); }
+  #wifi-loader svg.circle-outer{ height:86px; width:86px; }
+  #wifi-loader svg.circle-outer circle{ stroke-dasharray:62.75 188.25; }
+  #wifi-loader svg.circle-outer circle.back{ animation: circle-outer135 1.8s ease infinite .3s; }
+  #wifi-loader svg.circle-outer circle.front{ animation: circle-outer135 1.8s ease infinite .15s; }
+  #wifi-loader svg.circle-middle{ height:60px; width:60px; }
+  #wifi-loader svg.circle-middle circle{ stroke-dasharray:42.5 127.5; }
+  #wifi-loader svg.circle-middle circle.back{ animation: circle-middle6123 1.8s ease infinite .25s; }
+  #wifi-loader svg.circle-middle circle.front{ animation: circle-middle6123 1.8s ease infinite .1s; }
+  #wifi-loader svg.circle-inner{ height:34px; width:34px; }
+  #wifi-loader svg.circle-inner circle{ stroke-dasharray:22 66; }
+  #wifi-loader svg.circle-inner circle.back{ animation: circle-inner162 1.8s ease infinite .2s; }
+  #wifi-loader svg.circle-inner circle.front{ animation: circle-inner162 1.8s ease infinite .05s; }
+  #wifi-loader .text{ position:absolute; bottom:-40px; display:flex; justify-content:center; align-items:center; font-weight:600; font-size:14px; letter-spacing:.2px; }
+  #wifi-loader .text::before, #wifi-loader .text::after{ content:attr(data-text); }
+  #wifi-loader .text::before{ color:var(--text-color); }
+  #wifi-loader .text::after{ color:var(--front-color); animation:text-animation76 3.6s ease infinite; position:absolute; left:0; }
+  @keyframes circle-outer135{ 0%{stroke-dashoffset:25}25%{stroke-dashoffset:0}65%{stroke-dashoffset:301}80%{stroke-dashoffset:276}100%{stroke-dashoffset:276} }
+  @keyframes circle-middle6123{ 0%{stroke-dashoffset:17}25%{stroke-dashoffset:0}65%{stroke-dashoffset:204}80%{stroke-dashoffset:187}100%{stroke-dashoffset:187} }
+  @keyframes circle-inner162{ 0%{stroke-dashoffset:9}25%{stroke-dashoffset:0}65%{stroke-dashoffset:106}80%{stroke-dashoffset:97}100%{stroke-dashoffset:97} }
+  @keyframes text-animation76{ 0%{clip-path:inset(0 100% 0 0)}50%{clip-path:inset(0)}100%{clip-path:inset(0 0 0 100%)} }
 </style>
 
 <script type="importmap">
@@ -73,11 +91,6 @@
 }
 </script>
 
-  <style>
-/* keine Viewer-Overrides – alter Loader bleibt unverändert */
-</style>
-
-  
 </head>
 <body>
 <video id="camPreview" autoplay muted playsinline></video>
@@ -99,11 +112,23 @@
   </div>
 </div>
 
-<!-- EINMALIGER Loader -->
-<div id="loading" class="overlay" style="display:none">
-  <div class="loader-wrap">
-    <div class="loader-title" id="loadingText">Scanne Oberfläche …</div>
-    <div class="loader"><div class="loader-bar"></div></div>
+<!-- WiFi-Loader-Overlay (erscheint nach OK bis erste Fläche gefunden wird) -->
+<div id="scanLoader" class="scan-loader hidden" aria-live="polite">
+  <div id="wifi-loader">
+    <svg class="circle-outer" viewBox="0 0 86 86">
+      <circle class="back" cx="43" cy="43" r="40"></circle>
+      <circle class="front" cx="43" cy="43" r="40"></circle>
+      <circle class="new" cx="43" cy="43" r="40"></circle>
+    </svg>
+    <svg class="circle-middle" viewBox="0 0 60 60">
+      <circle class="back" cx="30" cy="30" r="27"></circle>
+      <circle class="front" cx="30" cy="30" r="27"></circle>
+    </svg>
+    <svg class="circle-inner" viewBox="0 0 34 34">
+      <circle class="back" cx="17" cy="17" r="14"></circle>
+      <circle class="front" cx="17" cy="17" r="14"></circle>
+    </svg>
+    <div class="text" data-text="Scanne Umgebung"></div>
   </div>
 </div>
 
@@ -136,7 +161,9 @@ const hud = $('#hud'),
       btnReplay= $('#btnReplay'),
       btnSound = $('#btnSound');
 const camPreview = $('#camPreview');
-const loadingEl  = $('#loading'), loadingText = $('#loadingText');
+
+/* Neuer Loader: */
+const scanLoader = $('#scanLoader');
 
 const toast = (m)=>{ const d=document.createElement('div'); d.className='toast'; d.textContent=m; toasts.appendChild(d); setTimeout(()=>d.remove(),2400); };
 const show  = (el,on)=>{ el && (el.style.display = on ? '' : 'none'); };
@@ -149,7 +176,7 @@ const src        = (qs.get('src')   || '').trim();
 const configURL  = src || (sceneId ? `${workerBase}/scenes/${encodeURIComponent(sceneId)}/scene.json` : '');
 if (!configURL) toast('Keine scene.json – ?scene=ID oder ?src=URL verwenden.');
 
-// === THREE setup (transparent, kein Blau) =====================================
+// === THREE setup ==============================================================
 const renderer = new THREE.WebGLRenderer({ antialias:true, powerPreference:'high-performance', alpha:true });
 renderer.setPixelRatio(Math.min(devicePixelRatio,2));
 renderer.outputColorSpace = THREE.SRGBColorSpace;
@@ -158,7 +185,7 @@ renderer.setClearColor(0x000000, 0);        // transparent
 renderer.setSize(innerWidth, innerHeight);
 app.appendChild(renderer.domElement);
 
-const scene  = new THREE.Scene();           // KEIN scene.background
+const scene  = new THREE.Scene();
 const camera = new THREE.PerspectiveCamera(50, innerWidth/innerHeight, 0.01, 100);
 camera.position.set(2.5,1.6,3.6);
 const controls = new OrbitControls(camera, renderer.domElement);
@@ -182,7 +209,7 @@ let startClicked=false;
 let xrSession=null, hitTestSource=null, hitTestRequested=false, placed=false;
 let pendingPlacementMatrix=null;
 
-let loaderShownOnce=false; // << nur EINMAL je Session zeigen
+let loaderShownOnce=false;
 
 // === Defaults + Utils =========================================================
 function deepMerge(a,b){ for(const k in b){ if(b[k] && typeof b[k]==='object' && !Array.isArray(b[k])) a[k]=deepMerge(a[k]||{},b[k]); else a[k]=b[k]; } return a; }
@@ -196,10 +223,6 @@ const DEFAULTS = {
   camera:{ fov:50, near:.01, far:100, start:[2.5,1.6,3.6], lookAt:[0,1,0] },
   model:{
     url:'', scale:1, rotateY:0,
-    /* Editor-Feld für Realweltgröße:
-       - realWorldMaxDim (Meter): größte Kante des Modells in der realen Welt
-       - realWorldHeight (Meter): Höhe in der realen Welt
-    */
     realWorldMaxDim:null, realWorldHeight:null, autoFit:true, maxDim:1.2
   },
   animation:{ enabled:true, clipName:'*', start:'onStart', loop:true, iterations:Infinity, clampWhenFinished:true, crossfade:.2, timeScale:1 },
@@ -207,12 +230,19 @@ const DEFAULTS = {
 };
 const resolveRel = (u, base)=> !u ? u : ( ()=>{ try{ return new URL(u,base).href }catch{ return u } } )();
 
-// Loader „einmalig“
+/* -------- Loader-Steuerung (einmalig je Session) -------- */
 function setLoadingOnce(on, msg){
-  // Deaktiviert: wir verwenden wieder den vorherigen/alten Loader.
-  show(loadingEl, false);
+  const textEl = scanLoader?.querySelector('.text');
+  if (msg && textEl) textEl.setAttribute('data-text', msg);
+  if (on){
+    if (!loaderShownOnce) {
+      scanLoader?.classList.remove('hidden');
+      loaderShownOnce = true;
+    }
+  } else {
+    scanLoader?.classList.add('hidden');
+  }
 }
-
 
 function updateHUD(){
   const hasAnim = actions.length>0;
@@ -235,7 +265,7 @@ function playAll(reset=false){
     a.paused = false;
   });
   playing = true;
-  maybePlayAudio(); // startet Audio, wenn Modus mit Animation
+  maybePlayAudio();
 }
 function pauseAll(){
   if (!actions.length) return;
@@ -259,17 +289,12 @@ btnSound.addEventListener('click', ()=>{
 function maybePlayAudio(){
   if (!audioReady || !allowAudio) return;
   const mode = (cfg?.audio?.autoplay || 'withAnimation');
-  if (
-    mode === 'auto' ||
-    (mode === 'withAnimation' && playing) ||
-    (mode === 'onPlace' && placed)
-  ){
+  if (mode === 'auto' || (mode === 'withAnimation' && playing) || (mode === 'onPlace' && placed)){
     listener.context.resume?.();
     setMuted(false);
     if (!audio.isPlaying) audio.play();
   }
 }
-
 
 // GLTF mit Draco + Progress
 function loadGLTF(url){
@@ -322,33 +347,20 @@ function loadGLTF(url){
   root.traverse(o=>{ if(o.isMesh){ if(o.material?.map) o.material.map.colorSpace = THREE.SRGBColorSpace; }});
   root.rotation.y = cfg.model.rotateY||0;
 
-  // Realwelt-Größe: priorisiere explizite Meterangaben aus Editor
-const box = new THREE.Box3().setFromObject(root);
-const size = new THREE.Vector3(); box.getSize(size);
-const maxDim = Math.max(size.x,size.y,size.z) || 1;
+  // Realwelt-Größe
+  const box = new THREE.Box3().setFromObject(root);
+  const size = new THREE.Vector3(); box.getSize(size);
+  const maxDim = Math.max(size.x,size.y,size.z) || 1;
+  const TARGET_MAX = 0.6;
+  let targetScale = cfg.model?.scale ?? 1;
+  if (cfg.model?.realWorldHeight){ targetScale *= (cfg.model.realWorldHeight / (size.y || 1)); }
+  else if (cfg.model?.realWorldMaxDim){ targetScale *= (cfg.model.realWorldMaxDim / maxDim); }
+  else { targetScale *= (TARGET_MAX / maxDim); }
+  root.scale.setScalar(targetScale);
+  root.rotation.y = cfg.model?.rotateY || 0;
+  scene.add(root);
 
-// HARTES Zielmaß (z. B. 0.6 m größte Kante)
-const TARGET_MAX = 0.6;
-
-// Optional: Felder aus cfg respektieren, ansonsten hartes Ziel
-let targetScale = cfg.model?.scale ?? 1;
-if (cfg.model?.realWorldHeight){               // Höhe in m
-  const curH = size.y || 1;
-  targetScale *= (cfg.model.realWorldHeight / curH);
-} else if (cfg.model?.realWorldMaxDim){        // größte Kante in m
-  targetScale *= (cfg.model.realWorldMaxDim / maxDim);
-} else {
-  targetScale *= (TARGET_MAX / maxDim);        // Harter Fallback
-}
-root.scale.setScalar(targetScale);
-
-// optionale Y-Vorrotation aus Config
-root.rotation.y = cfg.model?.rotateY || 0;
-
-scene.add(root);
-
-
-  // Animationen ('*' → alle)
+  // Animationen
   actions = [];
   if (gltf?.animations?.length && cfg.animation.enabled){
     mixer = new THREE.AnimationMixer(root);
@@ -375,7 +387,7 @@ scene.add(root);
   }
 })();
 
-// === AR / Hit-Test (ohne Reticle, Autoplace) ==================================
+// === AR / Hit-Test ============================================================
 async function canStartAR(){
   try { return !!(navigator.xr && await navigator.xr.isSessionSupported('immersive-ar')); }
   catch { return false; }
@@ -383,8 +395,7 @@ async function canStartAR(){
 async function startAR(){
   if (!await canStartAR()) return false;
 
-  // Einmal anzeigen (wird in C) wieder neutralisiert, falls du den alten Loader willst)
-  setLoadingOnce(true, 'Scanne Oberfläche …');
+  setLoadingOnce(true, 'Scanne Umgebung');  // ← Loader EIN
 
   xrSession = await navigator.xr.requestSession('immersive-ar', {
     requiredFeatures:['hit-test','local-floor'],
@@ -407,7 +418,7 @@ async function startAR(){
     hitTestSource = null; hitTestRequested = false; xrSession = null;
   });
 
-  // Fallback: Wenn nach 2.5s kein Place → trotzdem Animation/Audio starten
+  // Fallback: Nach 2.5s starten wir trotzdem und blenden Loader aus
   window.__placeFallbackId = setTimeout(()=>{
     if (!placed){
       if (cfg?.animation?.start === 'onStart') playAll(true);
@@ -422,55 +433,38 @@ async function startAR(){
 
 let lastPoseMatrix = null;
 function placeModelFromMatrix(mat4){
-  if (!root){ 
-    pendingPlacementMatrix = mat4.clone();
-    return; 
-  }
+  if (!root){ pendingPlacementMatrix = mat4.clone(); return; }
 
-  // Pose zerlegen
   const pos  = new THREE.Vector3();
   const quat = new THREE.Quaternion();
   const scl  = new THREE.Vector3();
   mat4.decompose(pos, quat, scl);
 
-  // Position setzen
   root.matrixAutoUpdate = true;
   root.position.copy(pos);
 
-  // Nur Yaw (Drehung um Y) aus der Pose übernehmen + optionales rotateY aus cfg
   const e = new THREE.Euler().setFromQuaternion(quat, 'YXZ');
   root.rotation.y = (cfg?.model?.rotateY || 0) + e.y;
 
   placed = true;
 
-  // Falls ein Fallback-Timer aktiv war: stoppen
-  if (window.__placeFallbackId){
-    clearTimeout(window.__placeFallbackId);
-    window.__placeFallbackId = null;
-  }
+  if (window.__placeFallbackId){ clearTimeout(window.__placeFallbackId); window.__placeFallbackId = null; }
 
-  // Start erst nach Platzierung
   if (cfg?.animation?.start === 'onStart') playAll(true);
-  maybePlayAudio();              // spielt bei autoplay: 'onPlace' / 'withAnimation'
-  setLoadingOnce(false);         // Custom-Loader AUS
+  maybePlayAudio();
+  setLoadingOnce(false);       // ← Loader AUS
 }
-
-
 
 // === OK (Poster schließen & starten) =========================================
 window.__start = async function(){
   startClicked = true;
-  allowAudio = true; // Autoplay-Freigabe durch User-Tap
+  allowAudio = true;
   try { listener?.context?.resume?.(); } catch {}
 
   show(welcome,false);
 
-  // optional: Kamerapreview im Overlay (kein AR)
-  // if (cfg?.ui?.overlayBackground === 'camera'){ startCameraPreview(); }
-
   const arStarted = await startAR().catch(()=>false);
   if (!arStarted){
-    // Fallback ohne AR → kein Loader nötig
     if (cfg?.animation?.start === 'onStart') playAll(true);
     maybePlayAudio();
   }
