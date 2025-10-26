@@ -273,8 +273,13 @@ btnSound.addEventListener('click', ()=>{
 });
 
 function maybePlayAudio(){
-  if (!allowAudio || !audioReady) return;
-  if (cfg.audio?.autoplay === 'auto' || (cfg.audio?.autoplay === 'withAnimation' && playing)) {
+  if (!audioReady || !allowAudio) return;
+  const mode = (cfg?.audio?.autoplay || 'withAnimation');
+  if (
+    mode === 'auto' ||
+    (mode === 'withAnimation' && playing) ||
+    (mode === 'onPlace' && placed)
+  ){
     listener.context.resume?.();
     setMuted(false);
     if (!audio.isPlaying) audio.play();
@@ -415,18 +420,33 @@ async function startAR(){
 
 let lastPoseMatrix = null;
 function placeModelFromMatrix(mat4){
-  if (!root){ pendingPlacementMatrix = mat4.clone(); return; }
+  if (!root){ 
+    pendingPlacementMatrix = mat4.clone();
+    return; 
+  }
+
+  // Pose zerlegen
+  const pos  = new THREE.Vector3();
+  const quat = new THREE.Quaternion();
+  const scl  = new THREE.Vector3();
+  mat4.decompose(pos, quat, scl);
+
+  // Position setzen
   root.matrixAutoUpdate = true;
-  root.position.setFromMatrixPosition(mat4);
+  root.position.copy(pos);
+
+  // Nur Yaw (Drehung um Y) aus der Pose übernehmen + optionales rotateY aus cfg
+  const e = new THREE.Euler().setFromQuaternion(quat, 'YXZ');
+  root.rotation.y = (cfg?.model?.rotateY || 0) + e.y;
+
   placed = true;
 
-  // Start erst NACH Platzierung
+  // Start erst nach Platzierung
   if (cfg?.animation?.start === 'onStart') playAll(true);
-  maybePlayAudio();
-
-  // Loader weg & nicht wieder anzeigen
-  setLoadingOnce(false);
+  maybePlayAudio();              // spielt bei autoplay: 'onPlace' jetzt korrekt
+  setLoadingOnce(false);         // Loader dauerhaft aus
 }
+
 
 // === OK (Poster schließen & starten) =========================================
 window.__start = async function(){
