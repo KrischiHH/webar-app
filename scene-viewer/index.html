@@ -72,6 +72,23 @@
   }
 }
 </script>
+
+  <style>
+/* Splash/Loader neutralisieren */
+.ar-splash, .loading-overlay {
+  background: transparent !important;
+  box-shadow: none !important;
+  backdrop-filter: none !important;
+}
+/* Primär-Button auf Splash abschalten/entstilisieren */
+.ar-splash .btn-primary {
+  background: transparent !important;
+  border: 1px solid transparent !important;
+  color: inherit !important;
+  box-shadow: none !important;
+}
+</style>
+  
 </head>
 <body>
 <video id="camPreview" autoplay muted playsinline></video>
