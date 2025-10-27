@@ -14,38 +14,43 @@
   /* Kamera-Preview hinter dem Welcome (best effort) */
   #camPreview{position:fixed;inset:0;object-fit:cover;z-index:0;display:none}
 
-  /* Welcome-Overlay (mobil-fest, Desktop-Karte) */
-  .overlay{position:fixed;inset:0;display:grid;padding:0;background:#000;z-index:4}
+  /* ========= Welcome als Kachel/Card (statt Fullscreen) ========= */
+  .overlay{
+    position:fixed; inset:0; display:grid; place-items:center;
+    padding:16px; z-index:4;
+    background: color-mix(in srgb, var(--bg) 60%, transparent);
+    backdrop-filter: blur(4px);
+  }
   .card{
-    width:100vw;height:100svh;height:100dvh;max-width:none;border:0;border-radius:0;
-    display:grid;grid-template-rows:minmax(40svh,48svh) 1fr;
-    background:linear-gradient(180deg,#0b1220,#0e1422);
+    width:min(88vw, 420px);
+    border:1px solid var(--border);
+    border-radius:18px;
+    background:var(--panel);
+    box-shadow:0 14px 40px rgba(0,0,0,.45), 0 0 0 1px rgba(255,255,255,.04);
+    overflow:hidden;
+    display:grid; grid-template-rows: auto 1fr;
   }
   .poster{min-height:0}
-  .poster img{width:100%;height:100%;object-fit:cover;display:block}
+  .poster img{
+    width:100%;
+    aspect-ratio:16/9;       /* Kachel, nicht Vollbild */
+    object-fit:cover; display:block; background:#0a0f1e;
+  }
   .body{
     padding:14px 16px calc(16px + env(safe-area-inset-bottom));
-    background:linear-gradient(180deg,rgba(0,0,0,0) 0%, rgba(0,0,0,.45) 25%, rgba(0,0,0,.65) 100%);
-    overflow:auto
   }
   .eyebrow{font-size:12px;letter-spacing:.18em;text-transform:uppercase;color:var(--muted)}
-  h1{font-size:28px;margin:.35rem 0 .4rem;line-height:1.2}
+  h1{font-size:18px;margin:.35rem 0 .4rem;line-height:1.25}
   p{color:#cbd5e1;margin:.2rem 0 .8rem}
   .row{display:flex;gap:12px;align-items:center;flex-wrap:wrap;margin-top:.6rem}
-  .btn{cursor:pointer;border:1px solid var(--border);background:linear-gradient(180deg,#1a2337,#162033);
-       color:var(--text);padding:10px 14px;border-radius:12px;font-weight:700}
-
-  @media (orientation:landscape){
-    .card{grid-template-columns:minmax(45%,56%) 1fr;grid-template-rows:1fr}
-    .body{background:linear-gradient(90deg,rgba(0,0,0,0) 0%,rgba(0,0,0,.55) 100%)}
+  .btn{
+    cursor:pointer;border:1px solid var(--border);
+    background:linear-gradient(180deg,#1a2337,#162033);
+    color:var(--text);padding:8px 12px;border-radius:10px;font-weight:800
   }
   @media (min-width:900px) and (min-height:540px){
-    .overlay{padding:24px;background:rgba(0,0,0,.9)}
-    .card{
-      width:min(880px,92vw);height:auto;border:1px solid var(--border);border-radius:20px;
-      grid-template-columns:320px 1fr;grid-template-rows:auto
-    }
-    .body{background:none}
+    .card{ width:min(880px,92vw); grid-template-columns:320px 1fr; grid-template-rows:auto }
+    .poster img{ height:100%; aspect-ratio:auto }
   }
 
   /* HUD */
@@ -205,6 +210,7 @@ let xrSession=null, hitTestSource=null, hitTestRequested=false, placed=false;
 let pendingPlacementMatrix=null;
 let lastPoseMatrix=null;
 let loaderShownOnce=false;
+let sessionStartMs=0;
 
 /* Try camera preview behind welcome (best effort) */
 async function tryStartPreview(){
@@ -345,7 +351,7 @@ function loadGLTF(url){
   else if (cfg.model?.realWorldMaxDim){ targetScale *= (cfg.model.realWorldMaxDim / maxDim); }
   else { targetScale *= (TARGET_MAX / maxDim); }
   root.scale.setScalar(targetScale);
-  root.visible = false;              // <<< WICHTIG: unsichtbar bis zur Platzierung
+  root.visible = false;              // <<< unsichtbar bis zur Platzierung
   scene.add(root);
 
   // Animation vorbereiten
@@ -374,13 +380,31 @@ function loadGLTF(url){
   }
 })();
 
+/* === iOS-Erkennung & Native-Fallback === */
+function detectIOS(){
+  const ua = navigator.userAgent || '';
+  return /iPad|iPhone|iPod/.test(ua) || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
+}
+function makeNativeFallbackUrl(){
+  const url = new URL('./index.html', location.href); // surface-ar/index.html neben guided.html
+  if (sceneId) url.searchParams.set('scene', sceneId);
+  if (qs.get('base')) url.searchParams.set('base', qs.get('base'));
+  if (src) url.searchParams.set('src', src);
+  url.searchParams.set('force','native');
+  return url.toString();
+}
+
 /* === AR / Hit-Test === */
 async function canStartAR(){
   try { return !!(navigator.xr && await navigator.xr.isSessionSupported('immersive-ar')); }
   catch { return false; }
 }
 async function startAR(){
-  if (!await canStartAR()) return false;
+  // iOS oder kein WebXR → direkt auf Native (model-viewer) wechseln
+  if (detectIOS() || !(await canStartAR())){
+    location.href = makeNativeFallbackUrl();
+    return false;
+  }
 
   setLoadingOnce(true, 'Scanne Umgebung…');
 
@@ -394,21 +418,13 @@ async function startAR(){
   renderer.xr.setReferenceSpaceType('local-floor');
   await renderer.xr.setSession(xrSession);
 
+  sessionStartMs = performance.now();
+
   const controller = renderer.xr.getController(0);
   controller.addEventListener('select', ()=>{ if (!placed && lastPoseMatrix) placeModelFromMatrix(lastPoseMatrix); });
   scene.add(controller);
 
   xrSession.addEventListener('end', ()=>{ hitTestSource=null; hitTestRequested=false; xrSession=null; });
-
-  // Fallback: wenn nach 2.5s nichts platziert, dennoch Loader aus und ggf. Animation/Audio starten
-  window.__placeFallbackId = setTimeout(()=>{
-    if (!placed){
-      if (cfg?.animation?.start === 'onStart') playAll(true);
-      maybePlayAudio();
-      setLoadingOnce(false);
-    }
-    window.__placeFallbackId = null;
-  }, 2500);
 
   return true;
 }
@@ -428,8 +444,6 @@ function placeModelFromMatrix(mat4){
 
   root.visible = true;             // <<< JETZT sichtbar
   placed = true;
-
-  if (window.__placeFallbackId){ clearTimeout(window.__placeFallbackId); window.__placeFallbackId = null; }
 
   if (cfg?.animation?.start === 'onStart') playAll(true);
   maybePlayAudio();
@@ -476,10 +490,20 @@ renderer.setAnimationLoop((t, frame)=>{
         const pose = hits[0].getPose(refSpace);
         lastPoseMatrix = new THREE.Matrix4().fromArray(pose.transform.matrix);
 
-        // Autoplace möglich – oder erst per Tap (hier Autoplace aktiv)
+        // Autoplace direkt bei erstem stabilen Treffer
         if (!placed){ placeModelFromMatrix(lastPoseMatrix); }
       }
     }
+
+    // >>> Hard-Fallback: nach ~2s ohne Hit → 1.2 m vor Kamera platzieren
+    if (!placed && sessionStartMs && (performance.now() - sessionStartMs) > 2000){
+      const cam = renderer.xr.getCamera(camera);
+      const dir = new THREE.Vector3(0,0,-1).applyQuaternion(cam.quaternion);
+      const pos = new THREE.Vector3().copy(cam.position).addScaledVector(dir, 1.2);
+      const mat = new THREE.Matrix4().compose(pos, cam.quaternion, new THREE.Vector3(1,1,1));
+      placeModelFromMatrix(mat);
+    }
+
   } else {
     controls.update();
   }
