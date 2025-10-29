@@ -54,6 +54,11 @@
     .scanBubble .dot{width:10px; height:10px; border-radius:50%; background:var(--accent); animation:pulse 1.2s infinite;}
     @keyframes pulse{0%{opacity:.25;transform:scale(.9)}50%{opacity:1;transform:scale(1.1)}100%{opacity:.25;transform:scale(.9)}}
 
+    /* Big blocking notice (e.g., in-app browser) */
+    #blocker{position:fixed; inset:0; display:none; place-items:center; background:rgba(0,0,0,.6); z-index:9999; pointer-events:auto}
+    #blocker .card{max-width:640px; margin:20px; padding:16px; border:1px solid var(--border); border-radius:16px; background:color-mix(in srgb, var(--panel) 92%, transparent)}
+    #blocker pre{white-space:pre-wrap; font:13px/1.4 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; color:var(--muted)}
+
     /* Tiny toast */
     #toast{position:fixed; right:12px; bottom:12px; background:color-mix(in srgb, var(--panel) 92%, transparent); border:1px solid var(--border); border-radius:10px; padding:10px 12px; display:none; z-index:9999}
 
@@ -79,7 +84,7 @@
         <div class="pbody">
           <div id="eyebrow" class="eyebrow">ARea – Szene</div>
           <div id="title" class="title">Titel der Szene</div>
-          <div id="desc" class="desc">Klicke auf OK, erlaube die Kamera und bewege das Gerät, bis eine Fläche erkannt wurde. Dann blendet diese Karte weich aus.</div>
+          <div id="desc" class="desc">Tippe auf OK, erlaube die Kamera und bewege das Gerät, bis eine Fläche erkannt wurde. Dann blendet diese Karte weich aus.</div>
           <div class="prow">
             <button id="btn-open-native" class="btn" hidden>In AR (nativ) öffnen</button>
             <button id="btn-start" class="btn primary">OK</button>
@@ -108,6 +113,17 @@
     <div id="status">Warte auf AR…</div>
   </div>
 
+  <div id="blocker">
+    <div class="card">
+      <h3>AR nicht verfügbar in diesem Browser</h3>
+      <p>Bitte öffne den Link in <b>Google Chrome</b> (nicht in der App-Webansicht). Tippe rechts oben auf „⋯“ → <b>In Chrome öffnen</b>.</p>
+      <pre id="blockerDetails"></pre>
+      <div style="display:flex; gap:8px; margin-top:10px;">
+        <button class="btn" id="blockerClose">Schließen</button>
+      </div>
+    </div>
+  </div>
+
   <div id="toast"></div>
 
   <script type="module">
@@ -117,9 +133,10 @@
 
     // ---------- tiny utils ----------
     const $ = sel => document.querySelector(sel);
-    function toast(msg){ const t=$('#toast'); t.textContent=msg; t.style.display='block'; setTimeout(()=>t.style.display='none',1800); }
+    function toast(msg){ const t=$('#toast'); t.textContent=msg; t.style.display='block'; setTimeout(()=>t.style.display='none',2400); }
     function qs(key){ return new URL(location.href).searchParams.get(key); }
     const isiOS = /iPad|iPhone|iPod/.test(navigator.userAgent) || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
+    const isInApp = /Instagram|FBAN|FBAV|Line|WeChat|MiuiBrowser|Twitter|TikTok|wv/.test(navigator.userAgent);
 
     // Resolve scene config
     async function loadConfig(){
@@ -135,7 +152,6 @@
       const res = await fetch(url, { cache:'no-store' });
       if (!res.ok) throw new Error('scene.json nicht gefunden');
       const json = await res.json();
-      // stash base to resolve relative URLs
       json.__base = `${base.replace(/\/$/,'')}/scenes/${encodeURIComponent(sceneId)}`;
       return json;
     }
@@ -176,37 +192,29 @@
     scene.add(reticle);
 
     // Model state
-    let model = null;            // THREE.Group
-    let previewModel = null;     // ghost that follows reticle before placement
-    let mixer = null;            // AnimationMixer
-    let audio = null;            // THREE.Audio
-    let placed = false;          // placed state
-    let baseScale = 1;           // for scale steps
-    let CFG = null;              // current scene config
+    let model = null, previewModel = null, mixer = null, audio = null;
+    let placed = false, baseScale = 1;
+    let CFG = null;
 
     const loader = new GLTFLoader();
-    const draco = new DRACOLoader(); draco.setDecoderPath('https://www.gstatic.com/draco/v1/decoders/');
-    loader.setDRACOLoader(draco);
+    const draco = new DRACOLoader(); draco.setDecoderPath('https://www.gstatic.com/draco/v1/decoders/'); loader.setDRACOLoader(draco);
 
     // Animation helpers
     function startAnimation(cfg){
       if (!mixer || !model) return;
       const clips = model.animations || [];
       if (!clips.length) return;
-      let clip = null;
       const want = (cfg.animation?.clipName)||'*';
-      if (want && want !== '*' ){ clip = clips.find(c=>c.name===want) || clips[0]; }
-      else { clip = clips[0]; }
+      const clip = (want && want!=='*') ? (clips.find(c=>c.name===want)||clips[0]) : clips[0];
       const act = mixer.clipAction(clip);
       const loop = cfg.animation?.loop !== false;
       act.setLoop(loop ? THREE.LoopRepeat : THREE.LoopOnce, loop ? (cfg.animation?.iterations||9999) : 0);
       act.clampWhenFinished = true;
       act.reset().play();
-      // Audio withAnimation
       if (cfg.audio?.autoplay === 'withAnimation' && audio && !audio.isPlaying) audio.play();
     }
     function pauseAnimationAndAudio(){
-      if (mixer){ mixer.timeScale = 0; }
+      if (mixer) mixer.timeScale = 0;
       if (CFG?.audio?.autoplay === 'withAnimation' && audio?.isPlaying) audio.stop();
     }
 
@@ -215,19 +223,26 @@
     const clock = new THREE.Clock();
 
     function updateScanOverlay(){
-      const el = document.getElementById('scanOverlay');
-      const show = !!xrSession && !placed && (!reticle.visible || !model);
-      el.hidden = !show;
+      $('#scanOverlay').hidden = !(xrSession && !placed && (!reticle.visible || !model));
+    }
+
+    function humanizeXRError(e){
+      const m = (e && (e.message||e.name||e.toString())) || 'Unbekannter Fehler';
+      if (/NotAllowedError|Permission/.test(m)) return 'Kamerazugriff verweigert. Erlaube die Kamera im Browser (Schloss-Icon) und lade neu.';
+      if (/NotFoundError/.test(m)) return 'Keine Kamera gefunden. Starte das Gerät neu.';
+      if (/NotSupported|Unsupported/.test(m)) return 'AR nicht unterstützt. Prüfe Chrome-Update & „Google Play Services for AR“ (ARCore) im Play-Store.';
+      if (/SecurityError/.test(m)) return 'Sichere Umgebung erforderlich. Öffne die Seite direkt in Chrome über HTTPS.';
+      return m;
     }
 
     async function startXR(cfg){
-      if (!navigator.xr) throw new Error('WebXR wird nicht unterstützt');
+      if (!navigator.xr) throw new Error('WebXR in diesem Browser nicht verfügbar.');
       const supported = await navigator.xr.isSessionSupported('immersive-ar');
-      if (!supported) throw new Error('AR-Session wird auf diesem Gerät/Browser nicht unterstützt');
+      if (!supported) throw new Error('AR-Session wird nicht unterstützt (evtl. ARCore fehlt oder In-App-Browser).');
 
       const overlayRoot = document.getElementById('overlayRoot');
-      const sessionInit = { requiredFeatures:['hit-test'], optionalFeatures:['dom-overlay','unbounded'], domOverlay:{ root: overlayRoot } };
-      const sess = await navigator.xr.requestSession('immersive-ar', sessionInit);
+      const init = { requiredFeatures:['hit-test'], optionalFeatures:['dom-overlay'], domOverlay:{ root: overlayRoot } };
+      const sess = await navigator.xr.requestSession('immersive-ar', init);
       xrSession = sess;
       renderer.xr.enabled = true;
       await renderer.xr.setSession(sess);
@@ -235,13 +250,12 @@
       viewerSpace = await sess.requestReferenceSpace('viewer');
       hitTestSource = await sess.requestHitTestSource({ space: viewerSpace });
 
-      // Input: tap to place
+      // Tap to place
       sess.addEventListener('select', ()=>{
         if (!reticle.visible || !previewModel) return;
-        // commit placement: move real model to reticle pose
         const m = new THREE.Matrix4(); m.copy(reticle.matrix);
         model.matrix.copy(m); model.matrix.decompose(model.position, model.quaternion, model.scale);
-        placed = true; previewModel.visible = false; document.getElementById('btn-place').textContent='Neu platzieren';
+        placed = true; previewModel.visible = false; $('#btn-place').textContent='Neu platzieren';
         if (cfg.animation?.start === 'onStart') startAnimation(cfg);
         updateScanOverlay();
       });
@@ -250,7 +264,7 @@
       renderer.setAnimationLoop((time, frame)=>{
         if (!frame) return;
         const ht = frame.getHitTestResults(hitTestSource);
-        if (ht.length > 0){
+        if (ht.length){
           const hit = ht[0];
           const m = new THREE.Matrix4().fromArray(hit.getPose(refSpace).transform.matrix);
           reticle.visible = true; reticle.matrix.copy(m);
@@ -265,43 +279,36 @@
         }
 
         const dt = clock.getDelta();
-        if (mixer) mixer.update(dt);
+        mixer && mixer.update(dt);
         renderer.render(scene, camera);
 
-        // Preflight fade-out when ready
-        if (!document.body.__preflightGone){
-          if (reticle.visible && model){
-            hidePreflight();
-          }
-        }
+        if (!document.body.__preflightGone && reticle.visible && model) hidePreflight();
         updateScanOverlay();
       });
     }
 
     function hidePreflight(){
-      const pf = document.getElementById('preflight');
+      const pf = $('#preflight');
       if (!pf || document.body.__preflightGone) return;
       pf.style.transition = 'opacity .35s ease';
       pf.style.opacity = '0';
       setTimeout(()=>{ pf.hidden = true; document.body.__preflightGone = true; }, 360);
-      document.getElementById('hud').hidden = false;
-      document.getElementById('status').textContent = 'Tippe, um zu platzieren';
+      $('#hud').hidden = false;
+      $('#status').textContent = 'Tippe, um zu platzieren';
       updateScanOverlay();
     }
 
-    // Load model and optional audio
+    // Load model + optional audio
     async function loadModel(cfg){
       const glbUrl = resolveUrl(cfg.model?.url||'scene.glb', cfg);
       const gltf = await loader.loadAsync(glbUrl);
       const root = gltf.scene || gltf.scenes?.[0];
       root.updateMatrixWorld(true);
 
-      // Real model
       model = new THREE.Group(); model.name = 'ModelRoot'; model.add(root);
       model.traverse(n=>{ if (n.material){ n.material.transparent = (n.material.transparent||false); } });
-      model.visible = true; scene.add(model);
+      scene.add(model);
 
-      // Ghost preview (semi-transparent)
       previewModel = model.clone(true);
       previewModel.traverse(n=>{
         if (n.material){
@@ -310,36 +317,31 @@
       });
       scene.add(previewModel);
 
-      // Apply base transform
       baseScale = cfg.model?.scale || 1;
       model.scale.setScalar(baseScale);
       previewModel.scale.setScalar(baseScale);
 
-      // Animations
       if (gltf.animations?.length){
         model.animations = gltf.animations;
         mixer = new THREE.AnimationMixer(root);
         const showPlay = (cfg.animation?.start === 'onClick');
-        document.getElementById('btn-play').hidden = !showPlay;
-        if (!showPlay && cfg.animation?.start === 'onStart' && placed){
-          startAnimation(cfg);
-        }
+        $('#btn-play').hidden = !showPlay;
+        if (!showPlay && cfg.animation?.start === 'onStart' && placed) startAnimation(cfg);
       } else {
-        document.getElementById('btn-play').hidden = true;
+        $('#btn-play').hidden = true;
       }
 
-      // Optional audio
       if (cfg.audio?.url){
         const listener = new THREE.AudioListener(); camera.add(listener);
-        const sound = new THREE.Audio(listener); // non-positional for simplicity
+        const sound = new THREE.Audio(listener);
         const url = resolveUrl(cfg.audio.url, cfg);
         const res = await fetch(url); const buff = await res.arrayBuffer();
         const ctx = listener.context; const abuf = await ctx.decodeAudioData(buff);
         sound.setBuffer(abuf); sound.setLoop(!!cfg.audio.loop); sound.setVolume(0.85);
         audio = sound; model.add(sound);
-        document.getElementById('btn-mute').hidden = false;
+        $('#btn-mute').hidden = false;
       } else {
-        document.getElementById('btn-mute').hidden = true;
+        $('#btn-mute').hidden = true;
       }
 
       updateScanOverlay();
@@ -351,59 +353,48 @@
     function rotateY(deg){ if (!model) return; const r = THREE.MathUtils.degToRad(deg); model.rotation.y += r; previewModel && (previewModel.rotation.y += r); }
 
     // HUD events
-    document.getElementById('btn-scale-up').onclick = ()=> setScale(1.1);
-    document.getElementById('btn-scale-dn').onclick = ()=> setScale(1/1.1);
-    document.getElementById('btn-rot-l').onclick = ()=> rotateY(-15);
-    document.getElementById('btn-rot-r').onclick = ()=> rotateY(+15);
-    document.getElementById('btn-reset').onclick = ()=>{ placed=false; previewModel.visible=true; document.getElementById('btn-place').textContent='Platzieren'; updateScanOverlay(); };
-    document.getElementById('btn-place').onclick = ()=>{
-      if (!placed){ toast('Tippe in die Szene, um zu platzieren'); }
-      else { placed=false; previewModel.visible=true; document.getElementById('btn-place').textContent='Platzieren'; updateScanOverlay(); }
-    };
-    document.getElementById('btn-play').onclick = ()=>{
+    $('#btn-scale-up').onclick = ()=> setScale(1.1);
+    $('#btn-scale-dn').onclick = ()=> setScale(1/1.1);
+    $('#btn-rot-l').onclick = ()=> rotateY(-15);
+    $('#btn-rot-r').onclick = ()=> rotateY(+15);
+    $('#btn-reset').onclick = ()=>{ placed=false; previewModel.visible=true; $('#btn-place').textContent='Platzieren'; updateScanOverlay(); };
+    $('#btn-place').onclick = ()=>{ if (!placed){ toast('Tippe in die Szene, um zu platzieren'); } else { placed=false; previewModel.visible=true; $('#btn-place').textContent='Platzieren'; updateScanOverlay(); } };
+    $('#btn-play').onclick = ()=>{
       if (!mixer || !model?.animations?.length) return;
       const ts = mixer.timeScale ?? 1;
-      if (ts === 0){
-        mixer.timeScale = 1;
-        if (CFG?.audio?.autoplay === 'withAnimation' && audio && !audio.isPlaying) audio.play();
-      } else {
-        pauseAnimationAndAudio();
-      }
+      if (ts === 0){ mixer.timeScale = 1; if (CFG?.audio?.autoplay === 'withAnimation' && audio && !audio.isPlaying) audio.play(); }
+      else { pauseAnimationAndAudio(); }
     };
-    document.getElementById('btn-mute').onclick = ()=>{ if (audio){ audio.setVolume(audio.getVolume() > 0 ? 0 : 0.85); } };
+    $('#btn-mute').onclick = ()=>{ if (audio){ audio.setVolume(audio.getVolume() > 0 ? 0 : 0.85); } };
 
-    // Touch gestures (pinch to scale, rotate)
-    const touches = new Map();
-    let g0 = null;
-    const dist = (a,b)=>Math.hypot(a.clientX-b.clientX, a.clientY-b.clientY);
-    const ang  = (a,b)=>Math.atan2(b.clientY-a.clientY, b.clientX-a.clientX);
-    window.addEventListener('pointerdown', e=>{ touches.set(e.pointerId, {clientX:e.clientX, clientY:e.clientY}); }, {passive:true});
-    window.addEventListener('pointermove', e=>{
+    // Touch gestures: pinch to scale, rotate
+    const touches = new Map(); let g0=null;
+    const dist=(a,b)=>Math.hypot(a.clientX-b.clientX, a.clientY-b.clientY);
+    const ang =(a,b)=>Math.atan2(b.clientY-a.clientY, b.clientX-a.clientX);
+    addEventListener('pointerdown', e=>{ touches.set(e.pointerId,{clientX:e.clientX,clientY:e.clientY}); }, {passive:true});
+    addEventListener('pointermove', e=>{
       if (!touches.has(e.pointerId)) return;
-      touches.set(e.pointerId, {clientX:e.clientX, clientY:e.clientY});
+      touches.set(e.pointerId,{clientX:e.clientX,clientY:e.clientY});
       if (placed && touches.size===2 && model){
-        const [t1,t2] = [...touches.values()];
-        const d = dist(t1,t2), a = ang(t1,t2);
-        if (!g0){ g0 = {d,a,scale:model.scale.x,rot:model.rotation.y}; return; }
-        const s = THREE.MathUtils.clamp(g0.scale * (d/g0.d), 0.05, 20);
-        model.scale.setScalar(s);
-        model.rotation.y = g0.rot + (a - g0.a);
+        const [t1,t2]=[...touches.values()];
+        const d=dist(t1,t2), a=ang(t1,t2);
+        if (!g0){ g0={d,a,scale:model.scale.x,rot:model.rotation.y}; return; }
+        model.scale.setScalar(THREE.MathUtils.clamp(g0.scale*(d/g0.d),0.05,20));
+        model.rotation.y = g0.rot + (a-g0.a);
       }
     }, {passive:true});
-    const endG = ()=>{ if (touches.size<2) g0=null; };
-    window.addEventListener('pointerup', e=>{ touches.delete(e.pointerId); endG(); }, {passive:true});
-    window.addEventListener('pointercancel', e=>{ touches.delete(e.pointerId); endG(); }, {passive:true});
+    const endG=()=>{ if (touches.size<2) g0=null; };
+    addEventListener('pointerup', e=>{ touches.delete(e.pointerId); endG(); }, {passive:true});
+    addEventListener('pointercancel', e=>{ touches.delete(e.pointerId); endG(); }, {passive:true});
 
     // Native fallback link
     function buildNativeLink(cfg){
       const glb = resolveUrl(cfg.model?.url||'', cfg);
       const usdz = resolveUrl(cfg.model?.usdzUrl||'', cfg);
-      if (isiOS && usdz){
-        return usdz; // iOS Quick Look
-      }
-      // Android Scene Viewer intent
+      if (isiOS && usdz) return usdz; // iOS Quick Look
       const file = encodeURIComponent(glb);
       const title = encodeURIComponent(cfg.meta?.title || 'ARea Model');
+      // note: Scene Viewer ignoriert Audio; spielt i.d.R. die erste Animation nach Platzierung
       return `intent://arvr.google.com/scene-viewer/1.0?file=${file}&mode=ar_preferred&title=${title}#Intent;scheme=https;package=com.google.android.googlequicksearchbox;end;`;
     }
     function shouldShowNativeCTA(cfg){
@@ -414,6 +405,12 @@
       return false;
     }
 
+    function showBlocker(msg, details=''){
+      $('#blocker').style.display='grid';
+      $('#blockerDetails').textContent = (details? (details+'\n') : '') + msg;
+    }
+    $('#blockerClose').onclick = ()=> $('#blocker').style.display='none';
+
     // Main
     (async function(){
       const cfg = await loadConfig(); CFG = cfg;
@@ -422,14 +419,30 @@
       $('#eyebrow').textContent = cfg.ui?.welcome?.eyebrow || 'ARea – Szene';
       $('#title').textContent   = cfg.ui?.welcome?.title   || cfg.meta?.title || 'Scene';
       $('#desc').textContent    = cfg.ui?.welcome?.desc    || 'Erlaube die Kamera & bewege das Gerät zum Erkennen der Oberfläche.';
-      const posterUrl = resolveUrl(cfg.ui?.welcome?.poster || 'poster.jpg', cfg);
-      $('#poster').src = posterUrl;
+      $('#poster').src          = resolveUrl(cfg.ui?.welcome?.poster || 'poster.jpg', cfg);
 
-      // Native fallback button visibility + action
+      // Native button
       const openNative = $('#btn-open-native');
       openNative.hidden = !shouldShowNativeCTA(cfg);
-      const nativeUrl = buildNativeLink(cfg);
-      openNative.onclick = ()=>{ location.href = nativeUrl; };
+      openNative.onclick = ()=>{ location.href = buildNativeLink(cfg); };
+
+      // In-App Browser Block
+      if (isInApp){
+        showBlocker('Dieser In-App-Browser blockiert WebXR-AR. Öffne den Link in Google Chrome.');
+      }
+
+      // Preflight: support probe
+      if (!window.isSecureContext){
+        showBlocker('Unsichere Umgebung. Bitte über HTTPS öffnen.');
+      } else if (!('xr' in navigator)){
+        // Falls kein WebXR, Native-CTA anbieten
+        openNative.hidden = false;
+      } else {
+        try{
+          const ok = await navigator.xr.isSessionSupported('immersive-ar');
+          if (!ok) openNative.hidden = false;
+        }catch{}
+      }
 
       // Load assets
       await loadModel(cfg);
@@ -439,15 +452,18 @@
       $('#btn-start').onclick = async ()=>{
         try{
           await startXR(cfg);
-          // Card bleibt sichtbar, bis Hit-Test + Model ready -> hidePreflight()
+          // Karte bleibt sichtbar, bis Hit-Test + Model ready -> hidePreflight()
         }catch(e){
           console.error(e);
-          toast(e.message||String(e));
-          openNative.hidden = false; // Fallback anbieten
+          const msg = humanizeXRError(e);
+          toast(msg);
+          // Wenn echte WebXR-Fehler: Native anbieten + ggf. Blocker bei In-App
+          openNative.hidden = false;
+          if (isInApp) showBlocker(msg, 'Hinweis: In-App-Browser erkannt.');
         }
       };
 
-      // Wenn WebXR komplett fehlt (iOS Safari etc.), Fallback zeigen
+      // Wenn WebXR komplett fehlt, Fallback zeigen
       if (!navigator.xr){ openNative.hidden = false; }
     })().catch(err=>{ console.error(err); toast('Fehler: '+(err?.message||err)); });
   </script>
