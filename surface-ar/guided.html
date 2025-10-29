@@ -47,6 +47,13 @@
     /* Small status pill (top-right) */
     #status{position:absolute; top:12px; right:12px; pointer-events:none; background:color-mix(in srgb, var(--panel) 85%, transparent); border:1px solid var(--border); color:var(--muted); border-radius:12px; padding:6px 10px; font-size:12px}
 
+    /* Scan overlay */
+    #scanOverlay{position:absolute; inset:0; display:grid; place-items:center; pointer-events:none;}
+    #scanOverlay[hidden]{display:none}
+    .scanBubble{display:flex; align-items:center; gap:8px; padding:8px 12px; border:1px solid var(--border); border-radius:999px; background:color-mix(in srgb, var(--panel) 86%, transparent); box-shadow:0 10px 24px rgba(0,0,0,.35); font-weight:800;}
+    .scanBubble .dot{width:10px; height:10px; border-radius:50%; background:var(--accent); animation:pulse 1.2s infinite;}
+    @keyframes pulse{0%{opacity:.25;transform:scale(.9)}50%{opacity:1;transform:scale(1.1)}100%{opacity:.25;transform:scale(.9)}}
+
     /* Tiny toast */
     #toast{position:fixed; right:12px; bottom:12px; background:color-mix(in srgb, var(--panel) 92%, transparent); border:1px solid var(--border); border-radius:10px; padding:10px 12px; display:none; z-index:9999}
 
@@ -72,13 +79,17 @@
         <div class="pbody">
           <div id="eyebrow" class="eyebrow">ARea – Szene</div>
           <div id="title" class="title">Titel der Szene</div>
-          <div id="desc" class="desc">Klicke auf OK, die AR-Szene startet im Hintergrund. Sobald eine Fläche erkannt wurde, blendet diese Karte weich aus.</div>
+          <div id="desc" class="desc">Klicke auf OK, erlaube die Kamera und bewege das Gerät, bis eine Fläche erkannt wurde. Dann blendet diese Karte weich aus.</div>
           <div class="prow">
             <button id="btn-open-native" class="btn" hidden>In AR (nativ) öffnen</button>
             <button id="btn-start" class="btn primary">OK</button>
           </div>
         </div>
       </div>
+    </div>
+
+    <div id="scanOverlay" hidden>
+      <div class="scanBubble"><span class="dot"></span> Umgebung scannen…</div>
     </div>
 
     <div id="hud" hidden>
@@ -108,6 +119,7 @@
     const $ = sel => document.querySelector(sel);
     function toast(msg){ const t=$('#toast'); t.textContent=msg; t.style.display='block'; setTimeout(()=>t.style.display='none',1800); }
     function qs(key){ return new URL(location.href).searchParams.get(key); }
+    const isiOS = /iPad|iPhone|iPod/.test(navigator.userAgent) || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
 
     // Resolve scene config
     async function loadConfig(){
@@ -116,17 +128,18 @@
         const text = decodeURIComponent(src.split(',')[1]||'');
         return JSON.parse(text);
       }
-      const scene = qs('scene');
+      const sceneId = qs('scene');
       const base  = qs('base') || 'https://area-publish.area-webar.workers.dev';
-      if (!scene) throw new Error('Kein scene oder src angegeben');
-      const url = `${base.replace(/\/$/,'')}/scenes/${encodeURIComponent(scene)}/scene.json`;
+      if (!sceneId) throw new Error('Kein scene oder src angegeben');
+      const url = `${base.replace(/\/$/,'')}/scenes/${encodeURIComponent(sceneId)}/scene.json`;
       const res = await fetch(url, { cache:'no-store' });
       if (!res.ok) throw new Error('scene.json nicht gefunden');
       const json = await res.json();
       // stash base to resolve relative URLs
-      json.__base = `${base.replace(/\/$/,'')}/scenes/${encodeURIComponent(scene)}`;
+      json.__base = `${base.replace(/\/$/,'')}/scenes/${encodeURIComponent(sceneId)}`;
       return json;
     }
+
     function resolveUrl(maybeRel, cfg){
       if (!maybeRel) return '';
       if (/^https?:|^data:|^blob:/.test(maybeRel)) return maybeRel;
@@ -166,9 +179,10 @@
     let model = null;            // THREE.Group
     let previewModel = null;     // ghost that follows reticle before placement
     let mixer = null;            // AnimationMixer
-    let audio = null;            // Audio (positional)
+    let audio = null;            // THREE.Audio
     let placed = false;          // placed state
     let baseScale = 1;           // for scale steps
+    let CFG = null;              // current scene config
 
     const loader = new GLTFLoader();
     const draco = new DRACOLoader(); draco.setDecoderPath('https://www.gstatic.com/draco/v1/decoders/');
@@ -188,12 +202,23 @@
       act.setLoop(loop ? THREE.LoopRepeat : THREE.LoopOnce, loop ? (cfg.animation?.iterations||9999) : 0);
       act.clampWhenFinished = true;
       act.reset().play();
+      // Audio withAnimation
+      if (cfg.audio?.autoplay === 'withAnimation' && audio && !audio.isPlaying) audio.play();
     }
-
-    function stopAnimation(){ if (mixer){ mixer.stopAllAction(); } }
+    function pauseAnimationAndAudio(){
+      if (mixer){ mixer.timeScale = 0; }
+      if (CFG?.audio?.autoplay === 'withAnimation' && audio?.isPlaying) audio.stop();
+    }
 
     // AR session / hit-test
     let xrSession = null, refSpace = null, viewerSpace = null, hitTestSource = null;
+    const clock = new THREE.Clock();
+
+    function updateScanOverlay(){
+      const el = document.getElementById('scanOverlay');
+      const show = !!xrSession && !placed && (!reticle.visible || !model);
+      el.hidden = !show;
+    }
 
     async function startXR(cfg){
       if (!navigator.xr) throw new Error('WebXR wird nicht unterstützt');
@@ -201,7 +226,7 @@
       if (!supported) throw new Error('AR-Session wird auf diesem Gerät/Browser nicht unterstützt');
 
       const overlayRoot = document.getElementById('overlayRoot');
-      const sessionInit = { requiredFeatures:['hit-test'], optionalFeatures:['dom-overlay'], domOverlay:{ root: overlayRoot } };
+      const sessionInit = { requiredFeatures:['hit-test'], optionalFeatures:['dom-overlay','unbounded'], domOverlay:{ root: overlayRoot } };
       const sess = await navigator.xr.requestSession('immersive-ar', sessionInit);
       xrSession = sess;
       renderer.xr.enabled = true;
@@ -217,14 +242,13 @@
         const m = new THREE.Matrix4(); m.copy(reticle.matrix);
         model.matrix.copy(m); model.matrix.decompose(model.position, model.quaternion, model.scale);
         placed = true; previewModel.visible = false; document.getElementById('btn-place').textContent='Neu platzieren';
-        // Autostart animation after placement if configured
         if (cfg.animation?.start === 'onStart') startAnimation(cfg);
+        updateScanOverlay();
       });
 
       // Render loop
       renderer.setAnimationLoop((time, frame)=>{
         if (!frame) return;
-        const pose = frame.getViewerPose(refSpace);
         const ht = frame.getHitTestResults(hitTestSource);
         if (ht.length > 0){
           const hit = ht[0];
@@ -240,17 +264,17 @@
           if (!placed && previewModel) previewModel.visible = false;
         }
 
-        const dt = renderer.xr.getClock().getDelta();
+        const dt = clock.getDelta();
         if (mixer) mixer.update(dt);
         renderer.render(scene, camera);
 
         // Preflight fade-out when ready
         if (!document.body.__preflightGone){
           if (reticle.visible && model){
-            // we have tracking + model
             hidePreflight();
           }
         }
+        updateScanOverlay();
       });
     }
 
@@ -262,6 +286,7 @@
       setTimeout(()=>{ pf.hidden = true; document.body.__preflightGone = true; }, 360);
       document.getElementById('hud').hidden = false;
       document.getElementById('status').textContent = 'Tippe, um zu platzieren';
+      updateScanOverlay();
     }
 
     // Load model and optional audio
@@ -269,18 +294,14 @@
       const glbUrl = resolveUrl(cfg.model?.url||'scene.glb', cfg);
       const gltf = await loader.loadAsync(glbUrl);
       const root = gltf.scene || gltf.scenes?.[0];
-      // normalize a bit
       root.updateMatrixWorld(true);
-      const box = new THREE.Box3().setFromObject(root), size = new THREE.Vector3(); box.getSize(size);
-      const maxDim = Math.max(0.001, size.length());
-      baseScale = cfg.model?.scale || 1;
 
       // Real model
       model = new THREE.Group(); model.name = 'ModelRoot'; model.add(root);
       model.traverse(n=>{ if (n.material){ n.material.transparent = (n.material.transparent||false); } });
       model.visible = true; scene.add(model);
 
-      // Ghost preview
+      // Ghost preview (semi-transparent)
       previewModel = model.clone(true);
       previewModel.traverse(n=>{
         if (n.material){
@@ -290,6 +311,7 @@
       scene.add(previewModel);
 
       // Apply base transform
+      baseScale = cfg.model?.scale || 1;
       model.scale.setScalar(baseScale);
       previewModel.scale.setScalar(baseScale);
 
@@ -309,21 +331,18 @@
       // Optional audio
       if (cfg.audio?.url){
         const listener = new THREE.AudioListener(); camera.add(listener);
-        const sound = new THREE.Audio(listener); // non-positional for mobile simplicity
+        const sound = new THREE.Audio(listener); // non-positional for simplicity
         const url = resolveUrl(cfg.audio.url, cfg);
         const res = await fetch(url); const buff = await res.arrayBuffer();
         const ctx = listener.context; const abuf = await ctx.decodeAudioData(buff);
         sound.setBuffer(abuf); sound.setLoop(!!cfg.audio.loop); sound.setVolume(0.85);
         audio = sound; model.add(sound);
-        // Autoplay rule – defer until user gesture (placement or play)
-        if (cfg.audio.autoplay === 'withAnimation'){
-          // will start when animation starts
-        }
         document.getElementById('btn-mute').hidden = false;
       } else {
         document.getElementById('btn-mute').hidden = true;
       }
 
+      updateScanOverlay();
       return model;
     }
 
@@ -336,50 +355,79 @@
     document.getElementById('btn-scale-dn').onclick = ()=> setScale(1/1.1);
     document.getElementById('btn-rot-l').onclick = ()=> rotateY(-15);
     document.getElementById('btn-rot-r').onclick = ()=> rotateY(+15);
-    document.getElementById('btn-reset').onclick = ()=>{ placed=false; document.getElementById('btn-place').textContent='Platzieren'; };
+    document.getElementById('btn-reset').onclick = ()=>{ placed=false; previewModel.visible=true; document.getElementById('btn-place').textContent='Platzieren'; updateScanOverlay(); };
     document.getElementById('btn-place').onclick = ()=>{
       if (!placed){ toast('Tippe in die Szene, um zu platzieren'); }
-      else { placed=false; previewModel.visible=true; document.getElementById('btn-place').textContent='Platzieren'; }
+      else { placed=false; previewModel.visible=true; document.getElementById('btn-place').textContent='Platzieren'; updateScanOverlay(); }
     };
     document.getElementById('btn-play').onclick = ()=>{
       if (!mixer || !model?.animations?.length) return;
-      // toggle play/pause using timescale
-      const ts = mixer.timeScale || 1;
-      if (ts === 0){ mixer.timeScale = 1; if (audio && audio.buffer && !audio.isPlaying) audio.play(); }
-      else {
-        mixer.timeScale = 0; if (audio?.isPlaying) audio.pause?.();
+      const ts = mixer.timeScale ?? 1;
+      if (ts === 0){
+        mixer.timeScale = 1;
+        if (CFG?.audio?.autoplay === 'withAnimation' && audio && !audio.isPlaying) audio.play();
+      } else {
+        pauseAnimationAndAudio();
       }
     };
     document.getElementById('btn-mute').onclick = ()=>{ if (audio){ audio.setVolume(audio.getVolume() > 0 ? 0 : 0.85); } };
+
+    // Touch gestures (pinch to scale, rotate)
+    const touches = new Map();
+    let g0 = null;
+    const dist = (a,b)=>Math.hypot(a.clientX-b.clientX, a.clientY-b.clientY);
+    const ang  = (a,b)=>Math.atan2(b.clientY-a.clientY, b.clientX-a.clientX);
+    window.addEventListener('pointerdown', e=>{ touches.set(e.pointerId, {clientX:e.clientX, clientY:e.clientY}); }, {passive:true});
+    window.addEventListener('pointermove', e=>{
+      if (!touches.has(e.pointerId)) return;
+      touches.set(e.pointerId, {clientX:e.clientX, clientY:e.clientY});
+      if (placed && touches.size===2 && model){
+        const [t1,t2] = [...touches.values()];
+        const d = dist(t1,t2), a = ang(t1,t2);
+        if (!g0){ g0 = {d,a,scale:model.scale.x,rot:model.rotation.y}; return; }
+        const s = THREE.MathUtils.clamp(g0.scale * (d/g0.d), 0.05, 20);
+        model.scale.setScalar(s);
+        model.rotation.y = g0.rot + (a - g0.a);
+      }
+    }, {passive:true});
+    const endG = ()=>{ if (touches.size<2) g0=null; };
+    window.addEventListener('pointerup', e=>{ touches.delete(e.pointerId); endG(); }, {passive:true});
+    window.addEventListener('pointercancel', e=>{ touches.delete(e.pointerId); endG(); }, {passive:true});
 
     // Native fallback link
     function buildNativeLink(cfg){
       const glb = resolveUrl(cfg.model?.url||'', cfg);
       const usdz = resolveUrl(cfg.model?.usdzUrl||'', cfg);
-      const ua = navigator.userAgent || '';
-      const isiOS = /iPhone|iPad|iPod/.test(ua);
       if (isiOS && usdz){
-        return usdz; // Quick Look will handle via <a rel="ar">, but button opens URL
+        return usdz; // iOS Quick Look
       }
       // Android Scene Viewer intent
       const file = encodeURIComponent(glb);
       const title = encodeURIComponent(cfg.meta?.title || 'ARea Model');
       return `intent://arvr.google.com/scene-viewer/1.0?file=${file}&mode=ar_preferred&title=${title}#Intent;scheme=https;package=com.google.android.googlequicksearchbox;end;`;
     }
+    function shouldShowNativeCTA(cfg){
+      const pref = cfg.ui?.welcome?.nativeCta ?? "ios-only";
+      if (pref === "never") return false;
+      if (pref === "always") return true;
+      if (pref === "ios-only") return isiOS && !!cfg.model?.usdzUrl;
+      return false;
+    }
 
     // Main
     (async function(){
-      const cfg = await loadConfig();
+      const cfg = await loadConfig(); CFG = cfg;
 
       // Apply UI text & poster
       $('#eyebrow').textContent = cfg.ui?.welcome?.eyebrow || 'ARea – Szene';
       $('#title').textContent   = cfg.ui?.welcome?.title   || cfg.meta?.title || 'Scene';
-      $('#desc').textContent    = cfg.ui?.welcome?.desc    || 'Erlaube Kamera & bewege das Gerät zum Erkennen der Oberfläche.';
+      $('#desc').textContent    = cfg.ui?.welcome?.desc    || 'Erlaube die Kamera & bewege das Gerät zum Erkennen der Oberfläche.';
       const posterUrl = resolveUrl(cfg.ui?.welcome?.poster || 'poster.jpg', cfg);
       $('#poster').src = posterUrl;
 
-      // Native fallback
+      // Native fallback button visibility + action
       const openNative = $('#btn-open-native');
+      openNative.hidden = !shouldShowNativeCTA(cfg);
       const nativeUrl = buildNativeLink(cfg);
       openNative.onclick = ()=>{ location.href = nativeUrl; };
 
@@ -391,15 +439,15 @@
       $('#btn-start').onclick = async ()=>{
         try{
           await startXR(cfg);
-          // keep card while tracking warms up; hidePreflight() is called in render loop when ready
+          // Card bleibt sichtbar, bis Hit-Test + Model ready -> hidePreflight()
         }catch(e){
+          console.error(e);
           toast(e.message||String(e));
-          // Offer native fallback
-          openNative.hidden = false;
+          openNative.hidden = false; // Fallback anbieten
         }
       };
 
-      // If WebXR unsupported, show native button immediately
+      // Wenn WebXR komplett fehlt (iOS Safari etc.), Fallback zeigen
       if (!navigator.xr){ openNative.hidden = false; }
     })().catch(err=>{ console.error(err); toast('Fehler: '+(err?.message||err)); });
   </script>
