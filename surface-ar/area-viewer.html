@@ -11,24 +11,6 @@
     html,body{ margin:0; height:100%; background:#000; color:var(--text); font:14px/1.45 system-ui,Segoe UI,Inter,Roboto,Arial,sans-serif }
     canvas{ display:block }
 
-    #overlay{ position:fixed; inset:0; display:grid; place-items:center; z-index:10; pointer-events:auto }
-    .card{
-      width:min(720px,92vw);
-      border:1px solid var(--border); border-radius:16px; overflow:hidden;
-      background:color-mix(in srgb, var(--panel) 86%, transparent);
-      box-shadow:0 18px 48px rgba(0,0,0,.5);
-      backdrop-filter:saturate(1.1) blur(8px);
-    }
-    .poster{ width:100%; display:block; background:#000; object-fit:cover; aspect-ratio:16/9 }
-    .pbody{ padding:14px 14px 16px }
-    .eyebrow{ font-size:12px; color:var(--muted); text-transform:uppercase; letter-spacing:.12em }
-    .title{ font-weight:800; font-size:18px; margin:4px 0 }
-    .desc{ color:var(--muted) }
-    .prow{ display:flex; gap:10px; justify-content:flex-end; margin-top:12px }
-    .btn{ background:var(--panel); border:1px solid var(--border); color:var(--text); padding:10px 12px; border-radius:12px; cursor:pointer; font-weight:800 }
-    .btn:hover{ border-color:var(--accent) }
-    .btn.primary{ background:linear-gradient(180deg, color-mix(in srgb, var(--panel) 78%, var(--accent) 22%), color-mix(in srgb, var(--panel) 85%, var(--accent2) 15%)); }
-
     #hud{ position:fixed; left:0; right:0; bottom:env(safe-area-inset-bottom); padding:10px; display:flex; justify-content:center; pointer-events:auto; z-index:9 }
     #hud .bar{ display:flex; gap:8px; padding:8px; border:1px solid var(--border); border-radius:999px; background:color-mix(in srgb, var(--panel) 86%, transparent); box-shadow:0 10px 24px rgba(0,0,0,.35) }
     .iconbtn{ display:inline-flex; align-items:center; gap:8px; padding:10px 12px; border-radius:999px; border:1px solid var(--border); background:color-mix(in srgb, var(--panel) 92%, transparent); color:var(--text); cursor:pointer; font-weight:800 }
@@ -53,20 +35,6 @@
   </script>
 </head>
 <body>
-  <div id="overlay">
-    <div class="card">
-      <img id="poster" class="poster" alt="">
-      <div class="pbody">
-        <div id="eyebrow" class="eyebrow">ARea – Szene</div>
-        <div id="title" class="title">Titel der Szene</div>
-        <div id="desc" class="desc">Mit einem Finger ziehen = Position · Zweifinger = Pinch/Rotate · Tippen zum Platzieren</div>
-        <div class="prow">
-          <button id="btn-start" class="btn primary">Start AR</button>
-        </div>
-      </div>
-    </div>
-  </div>
-
   <div id="hud" hidden>
     <div class="bar">
       <button id="btn-replace" class="iconbtn">Neu ausrichten</button>
@@ -84,6 +52,7 @@
     const $ = s => document.querySelector(s);
     const setStatus = (t,pulse=false)=>{ const e=$('#status'); e.textContent=t; e.classList.toggle('pulse', !!pulse); };
     const easeOutCubic = x => (1 - Math.pow(1 - x, 3));
+    const clamp = THREE.MathUtils.clamp;
 
     function qs(key){ return new URL(location.href).searchParams.get(key); }
     function resolveUrl(rel, cfg){
@@ -152,7 +121,7 @@
     gltfLoader.setDRACOLoader(draco);
 
     // State
-    let cfgCache=null;
+    let cfg=null;
     let model=null;        // THREE.Group (Root)
     let mixer=null;        // THREE.AnimationMixer
     let audio=null;        // THREE.Audio
@@ -165,17 +134,22 @@
     let baseYaw=0, baseScale=1;
     let gestureInitialDist=0;
     let gestureInitialYaw=0;
-    const clampScale = s => THREE.MathUtils.clamp(s, 0.05, 10);
+    const clampScale = s => clamp(s, 0.05, 10);
 
-    // Footprint (wird nach Model-Load gebaut)
+    // Footprint (nach Model-Load)
     let footprint=null, footOutline=null;
 
     // Drop-Animation state
     let drop = { active:false, t0:0, dur:260, s0:1, s1:1, yBase:0, yLift:0.03 };
     let fpFade = { active:false, t0:0, dur:260, op0:0.18, op1:0, line0:0.7, line1:0 };
 
-    // Letzte Drag-Position (für sicheres Platzieren)
+    // Letzte Drag-Position für „sicheres Platzieren“
     let lastDragPos = null;
+
+    // Raycaster für Tap-auf-Objekt
+    const raycaster = new THREE.Raycaster();
+    const tmpMat4 = new THREE.Matrix4();
+    const tmpVec3 = new THREE.Vector3();
 
     function pickClip(gltf, cfg){
       const clips = gltf.animations || [];
@@ -200,12 +174,17 @@
         try{ audio.play(); }catch{}
       }
     }
-    function stopAnimationAndAudio(){
-      if (mixer) mixer.timeScale = 0;
+    function stopAndResetAnimation(){
+      if (mixer){
+        mixer.stopAllAction();
+        mixer.timeScale = 0;
+      }
       if (audio?.isPlaying){ (audio.pause||audio.stop).call(audio); }
+      if (audio?.buffer){ try{ audio.offset = 0; }catch{} } // reset best effort
+      startedClip = false;
     }
 
-    async function loadModel(cfg){
+    async function loadModel(){
       const url = resolveUrl(cfg.model?.url || 'scene.glb', cfg);
       const gltf = await gltfLoader.loadAsync(url);
       const root = gltf.scene || gltf.scenes?.[0];
@@ -249,6 +228,9 @@
         mixer = new THREE.AnimationMixer(root);
         model.userData._clip = pickClip(gltf, cfg);
         console.log('Animations:', gltf.animations.map(a=>({name:a.name,duration:a.duration})));
+      } else {
+        mixer = null;
+        model.userData._clip = null;
       }
 
       // Audio
@@ -265,6 +247,12 @@
       } else {
         $('#btn-mute').hidden = true;
       }
+
+      // Vorschau sichtbar, aber (noch) nicht platziert
+      placed = false;
+      startedClip = false;
+      if (footprint){ footprint.visible = true; footprint.material.opacity = 0.18; }
+      if (footOutline){ footOutline.visible = true; footOutline.material.opacity = 0.7; }
     }
 
     function applyTransform(pos){
@@ -276,7 +264,29 @@
       if (footOutline) footOutline.visible = !placed;
     }
 
-    async function startXR(cfg){
+    function tryEnterEditModeViaPick(frame, inputSource){
+      if (!placed || !model) return false;
+      if (!inputSource?.targetRaySpace) return false;
+      const pose = frame.getPose(inputSource.targetRaySpace, refSpace);
+      if (!pose) return false;
+      const m = tmpMat4.fromArray(pose.transform.matrix);
+      const o = new THREE.Vector3().setFromMatrixPosition(m);
+      const dir = new THREE.Vector3(0,0,-1).applyMatrix4(m).sub(o).normalize();
+      raycaster.set(o, dir);
+      const hits = raycaster.intersectObject(model, true);
+      if (hits.length){
+        // Wechsel in Edit/Vorschau
+        placed = false;
+        stopAndResetAnimation();
+        if (footprint){ footprint.visible = true; footprint.material.opacity = 0.18; }
+        if (footOutline){ footOutline.visible = true; footOutline.material.opacity = 0.7; }
+        setStatus('Bearbeiten: Ziehen/Pinch/Rotate, Tippen zum Platzieren');
+        return true;
+      }
+      return false;
+    }
+
+    async function startXR(){
       if (!navigator.xr) throw new Error('WebXR wird nicht unterstützt');
       const supported = await navigator.xr.isSessionSupported('immersive-ar');
       if (!supported) throw new Error('AR-Session wird auf diesem Gerät/Browser nicht unterstützt');
@@ -299,105 +309,123 @@
         placed = false;
         startedClip = false;
         lastDragPos = null;
-        stopAnimationAndAudio();
-        // Footprint zurücksetzen
+        stopAndResetAnimation();
         if (footprint){ footprint.visible = true; footprint.material.opacity = 0.18; }
         if (footOutline){ footOutline.visible = true; footOutline.material.opacity = 0.7; }
       });
 
-      // Tippen = Platzieren (nur wenn vorher interagiert/gezogen)
-      xrSession.addEventListener('select', ()=>{
-        if (placed || !model) return;
-        if (!lastDragPos){
-          setStatus('Bitte zuerst Objekt durch Ziehen positionieren');
-          return;
+      // Tap-Logik:
+      // - Wenn platziert und Tap trifft Objekt → Edit-Modus
+      // - Wenn nicht platziert → platzieren an aktueller Vorschau-Position
+      xrSession.addEventListener('select', (ev)=>{
+        const frame = ev.frame;
+        const src = ev.inputSource;
+
+        if (tryEnterEditModeViaPick(frame, src)) return;
+
+        if (!placed && model){
+          if (!lastDragPos){
+            setStatus('Zuerst Objekt positionieren (Ziehen) – dann Tippen zum Platzieren');
+            return;
+          }
+          placed = true;
+          setStatus('Platziert – Animation/Audio laufen');
+
+          // Drop-Animation
+          drop.active = true;
+          drop.t0 = performance.now();
+          drop.s1 = model.scale.x;
+          drop.s0 = drop.s1 * 0.85;
+          drop.yBase = model.position.y;
+          model.scale.setScalar(drop.s0);
+          model.position.y = drop.yBase + drop.yLift;
+
+          // Footprint ausfaden
+          if (footprint){
+            fpFade.active = true; fpFade.t0 = drop.t0;
+            fpFade.op0 = footprint.material.opacity; fpFade.op1 = 0;
+          }
+          if (footOutline){
+            fpFade.line0 = footOutline.material.opacity; fpFade.line1 = 0;
+          }
+
+          // Autostart Animation/Audio
+          startAnimationAndAudio(cfg);
+          startedClip = true;
+          $('#hud').hidden = false;
         }
-        placed = true;
-        setStatus('Platziert – Animation/Audio laufen');
-
-        // Drop-Animation starten
-        drop.active = true;
-        drop.t0 = performance.now();
-        drop.s1 = model.scale.x;
-        drop.s0 = drop.s1 * 0.85;
-        drop.yBase = model.position.y;
-
-        model.scale.setScalar(drop.s0);
-        model.position.y = drop.yBase + drop.yLift;
-
-        // Footprint ausfaden
-        if (footprint){
-          fpFade.active = true; fpFade.t0 = drop.t0;
-          fpFade.op0 = footprint.material.opacity; fpFade.op1 = 0;
-        }
-        if (footOutline){
-          fpFade.line0 = footOutline.material.opacity; fpFade.line1 = 0;
-        }
-
-        // Autostart Animation/Audio
-        if (!startedClip){ startAnimationAndAudio(cfg); startedClip = true; }
-        $('#hud').hidden = false;
       });
 
-      // Renderloop: nur Gesten steuern Position/Scale/Rotate (kein Auto-Fallback)
+      // Renderloop:
+      // - Wenn NICHT platziert:
+      //   - Ohne Touch → Vorschau folgt dem zentralen Hit-Test (wie Native)
+      //   - 1 Finger → Drag
+      //   - 2 Finger → Pinch/Rotate + Position = Mittelpunkt
       renderer.setAnimationLoop((t, frame)=>{
         if (!frame) return;
-        const clockDt = renderer.xr.getClock().getDelta();
+        const dt = renderer.xr.getClock().getDelta();
 
-        // Transient Hits sammeln (Finger)
-        let touchHits = [];
-        if (transientSource){
-          const tr = frame.getHitTestResultsForTransientInput(transientSource);
-          for (const rec of tr){
-            const hit = rec.results?.[0];
-            if (hit){
-              const pose = hit.getPose(refSpace);
-              if (pose?.transform?.position){
-                const p = pose.transform.position;
-                touchHits.push(new THREE.Vector3(p.x, p.y, p.z));
+        if (!placed && model){
+          let handledByTouch = false;
+
+          // Transient Finger-Hits
+          if (transientSource){
+            const tr = frame.getHitTestResultsForTransientInput(transientSource);
+            const touchHits = [];
+            for (const rec of tr){
+              const hit = rec.results?.[0];
+              if (hit){
+                const pose = hit.getPose(refSpace);
+                if (pose?.transform?.position){
+                  const p = pose.transform.position;
+                  touchHits.push(new THREE.Vector3(p.x, p.y, p.z));
+                }
+              }
+            }
+
+            if (touchHits.length === 1){
+              applyTransform(touchHits[0]);
+              gestureInitialDist = 0;
+              handledByTouch = true;
+            } else if (touchHits.length >= 2){
+              const p1 = touchHits[0], p2 = touchHits[1];
+              const v = new THREE.Vector3().subVectors(p2, p1);
+              const dist = Math.hypot(v.x, v.z);
+              const ang  = Math.atan2(v.z, v.x);
+              if (!gestureInitialDist){
+                gestureInitialDist = dist || 0.0001;
+                gestureInitialYaw = ang;
+                baseScale = model.scale.x || (cfg?.model?.scale||1);
+                baseYaw = userYaw || 0;
+              } else {
+                const f = dist / (gestureInitialDist||0.0001);
+                const newS = clampScale(baseScale * f);
+                model.scale.setScalar(newS);
+
+                const dAng = ang - gestureInitialYaw;
+                userYaw = baseYaw + dAng;
+                model.rotation.set(0, userYaw, 0);
+
+                const mid = new THREE.Vector3().addVectors(p1, p2).multiplyScalar(0.5);
+                applyTransform(mid);
+                handledByTouch = true;
               }
             }
           }
-        }
 
-        // Wenn nicht platziert: Gesten anwenden
-        if (!placed && model){
-          if (touchHits.length === 1){
-            // Drag: Position folgt Finger
-            applyTransform(touchHits[0]);
-            gestureInitialDist = 0;
-          } else if (touchHits.length >= 2){
-            // Pinch/Rotate auf Basis der beiden ersten Finger
-            const p1 = touchHits[0], p2 = touchHits[1];
-            const v = new THREE.Vector3().subVectors(p2, p1);
-            const dist = Math.hypot(v.x, v.z); // Distanz in XZ-Ebene
-            const ang  = Math.atan2(v.z, v.x); // Winkel in XZ
-
-            if (!gestureInitialDist){
-              gestureInitialDist = dist || 0.0001;
-              gestureInitialYaw = ang;
-              baseScale = model.scale.x || (cfg?.model?.scale||1);
-              baseYaw = userYaw || 0;
-            } else {
-              const f = dist / (gestureInitialDist||0.0001);
-              const newS = clampScale(baseScale * f);
-              model.scale.setScalar(newS);
-
-              const dAng = ang - gestureInitialYaw;
-              userYaw = baseYaw + dAng;
-              model.rotation.set(0, userYaw, 0);
-
-              const mid = new THREE.Vector3().addVectors(p1, p2).multiplyScalar(0.5);
-              applyTransform(mid);
+          // Kein Finger → zentrale Vorschau (wie Native Reticle, aber mit Footprint/Modell)
+          if (!handledByTouch && hitTestSource){
+            const ht = frame.getHitTestResults(hitTestSource);
+            if (ht.length){
+              const pose = ht[0].getPose(refSpace);
+              if (pose?.transform?.position){
+                const p = pose.transform.position;
+                applyTransform(new THREE.Vector3(p.x, p.y, p.z));
+              }
             }
           }
 
-          if (!document.body.__pfGone){
-            hidePreflight();
-            setStatus(transientSource
-              ? 'Mit einem Finger ziehen · Zweifinger Pinch/Rotate · Tippen zum Platzieren'
-              : 'Ihr Browser unterstützt Finger-Hit-Tests nicht – nur Tippen möglich');
-          }
+          setStatus('Bewegen: Finger ziehen · Skalieren/Drehen: Pinch/Rotate · Tippen platziert');
         }
 
         // Drop-Animation
@@ -433,59 +461,29 @@
           if (k >= 1){ fpFade.active = false; }
         }
 
-        if (mixer) mixer.update(clockDt);
+        if (mixer) mixer.update(dt);
         renderer.render(scene, camera);
       });
 
-      setStatus(transientSource
-        ? 'Berühre zum Bewegen · Zwei Finger zum Skalieren/Drehen'
-        : 'Scanne Umgebung… (Finger-Hit-Tests nicht verfügbar)', !transientSource);
-    }
-
-    function hidePreflight(){
-      const ov = $('#overlay');
-      if (!ov || document.body.__pfGone) return;
-      ov.style.transition='opacity .3s ease';
-      ov.style.opacity='0';
-      setTimeout(()=>{ ov.hidden = true; document.body.__pfGone = true; }, 320);
+      setStatus('Bewegen: Finger ziehen · Skalieren/Drehen: Pinch/Rotate · Tippen platziert');
     }
 
     // UI
-    $('#btn-start').onclick = async ()=>{
-      try{
-        if (!cfgCache){
-          cfgCache = await loadConfig();
-          // UI-Texte/Poster
-          $('#eyebrow').textContent = cfgCache.ui?.welcome?.eyebrow || 'ARea – Szene';
-          $('#title').textContent   = cfgCache.ui?.welcome?.title   || cfgCache.meta?.title || 'Scene';
-          $('#desc').textContent    = cfgCache.ui?.welcome?.desc    || 'Mit einem Finger ziehen · Zweifinger Pinch/Rotate · Tippen zum Platzieren';
-          const posterUrl = resolveUrl(cfgCache.ui?.welcome?.poster || 'poster.jpg', cfgCache);
-          $('#poster').src = posterUrl;
-        }
-        await loadModel(cfgCache);
-        await startXR(cfgCache);
-      }catch(e){
-        console.error(e);
-        alert('Konnte AR nicht starten: ' + (e?.message||String(e)));
-      }
-    };
-
     $('#btn-replace').onclick = ()=>{
+      if (!model) return;
       placed = false;
-      startedClip = false;
       lastDragPos = null;
-      setStatus('Mit einem Finger ziehen · Zweifinger Pinch/Rotate · Tippen zum Platzieren');
-      stopAnimationAndAudio();
-      // Footprint zurücksetzen/einblenden
+      stopAndResetAnimation();
       if (footprint){ footprint.visible = true; footprint.material.opacity = 0.18; }
       if (footOutline){ footOutline.visible = true; footOutline.material.opacity = 0.7; }
+      setStatus('Bearbeiten: Finger ziehen · Pinch/Rotate · Tippen platziert');
     };
 
     let muted=false;
     $('#btn-mute').onclick = ()=>{
       if (!audio) return;
       muted = !muted;
-      audio.setVolume(muted ? 0 : (Number.isFinite(cfgCache?.audio?.volume)?cfgCache.audio.volume:0.85));
+      audio.setVolume(muted ? 0 : (Number.isFinite(cfg?.audio?.volume)?cfg.audio.volume:0.85));
       $('#btn-mute').classList.toggle('danger', muted);
     };
 
@@ -493,16 +491,14 @@
     (async function(){
       try{
         setStatus('Lade Szene…');
-        cfgCache = await loadConfig();
-        $('#eyebrow').textContent = cfgCache.ui?.welcome?.eyebrow || 'ARea – Szene';
-        $('#title').textContent   = cfgCache.ui?.welcome?.title   || cfgCache.meta?.title || 'Scene';
-        $('#desc').textContent    = cfgCache.ui?.welcome?.desc    || 'Mit einem Finger ziehen · Zweifinger Pinch/Rotate · Tippen zum Platzieren';
-        const posterUrl = resolveUrl(cfgCache.ui?.welcome?.poster || 'poster.jpg', cfgCache);
-        $('#poster').src = posterUrl;
-        setStatus('Bereit – Start AR');
+        cfg = await loadConfig();
+        await loadModel();
+        await startXR();
+        $('#hud').hidden = false;
+        setStatus('Bewegen: Finger ziehen · Skalieren/Drehen: Pinch/Rotate · Tippen platziert');
       }catch(e){
         console.error(e);
-        alert('Initialisierungsfehler: ' + (e?.message||String(e)));
+        alert('Fehler: ' + (e?.message||String(e)));
       }
     })();
   </script>
