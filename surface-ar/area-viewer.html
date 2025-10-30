@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
-  <title>ARea – AR Viewer</title>
+  <title>ARea – AR Viewer (Gesten)</title>
   <meta name="theme-color" content="#0b1323" />
   <style>
     :root{ --bg:#0b1323; --panel:#0f1626; --text:#e9eefb; --muted:#a7b4d6; --border:#1f2940; --accent:#7aa2ff; --accent2:#5eead4; --danger:#ef4444; }
@@ -59,7 +59,7 @@
       <div class="pbody">
         <div id="eyebrow" class="eyebrow">ARea – Szene</div>
         <div id="title" class="title">Titel der Szene</div>
-        <div id="desc" class="desc">Klicke auf Start. Scanne eine ebene Fläche und tippe zum Platzieren. Danach starten Animation und Audio automatisch.</div>
+        <div id="desc" class="desc">Mit einem Finger ziehen = Position · Zweifinger = Pinch/Rotate · Tippen zum Platzieren</div>
         <div class="prow">
           <button id="btn-start" class="btn primary">Start AR</button>
         </div>
@@ -83,7 +83,6 @@
 
     const $ = s => document.querySelector(s);
     const setStatus = (t,pulse=false)=>{ const e=$('#status'); e.textContent=t; e.classList.toggle('pulse', !!pulse); };
-
     function qs(key){ return new URL(location.href).searchParams.get(key); }
     function resolveUrl(rel, cfg){
       if (!rel) return '';
@@ -92,7 +91,6 @@
     }
 
     async function loadConfig(){
-      // src=… (data:, http(s), inline-JSON) ODER scene=<id>&base=<root>
       const src = qs('src');
       if (src){
         const isData = src.startsWith('data:');
@@ -146,13 +144,6 @@
       camera.aspect = innerWidth/innerHeight; camera.updateProjectionMatrix();
     });
 
-    // Reticle (Ring) für Hit-Test
-    const reticle = new THREE.Mesh(
-      new THREE.RingGeometry(0.09, 0.1, 32).rotateX(-Math.PI/2),
-      new THREE.MeshBasicMaterial({ color:0x88ccff, transparent:true, opacity:0.85 })
-    );
-    reticle.matrixAutoUpdate = false; reticle.visible = false; scene.add(reticle);
-
     // Loader
     const gltfLoader = new GLTFLoader();
     const draco = new DRACOLoader(); draco.setDecoderPath('https://www.gstatic.com/draco/v1/decoders/');
@@ -165,7 +156,17 @@
     let audio=null;        // THREE.Audio
     let placed=false;
     let startedClip=false;
-    let xrSession=null, refSpace=null, viewerSpace=null, hitTestSource=null;
+    let xrSession=null, refSpace=null, viewerSpace=null, hitTestSource=null, transientSource=null;
+
+    // Gesture state
+    let userYaw=0;           // zusätzliche Y-Rotation durch Gesten
+    let baseYaw=0, baseScale=1;
+    let gestureInitialDist=0;
+    let gestureInitialYaw=0;
+    const clampScale = s => THREE.MathUtils.clamp(s, 0.05, 10);
+
+    // Footprint (wird nach Model-Load gebaut)
+    let footprint=null;
 
     function pickClip(gltf, cfg){
       const clips = gltf.animations || [];
@@ -206,14 +207,41 @@
       model.add(root);
       scene.add(model);
 
-      // Basis-Scale
-      const s = cfg.model?.scale || 1;
-      model.scale.setScalar(s);
+      // Basisskalierung
+      baseScale = cfg.model?.scale || 1;
+      model.scale.setScalar(baseScale);
+
+      // Footprint anhand Bounding Box
+      try{
+        const box = new THREE.Box3().setFromObject(root);
+        const size = new THREE.Vector3(); box.getSize(size);
+        const min = new THREE.Vector3(); box.getMin(min);
+
+        const w = Math.max(size.x, 0.05);
+        const d = Math.max(size.z, 0.05);
+        const yLift = -min.y + 0.001; // knapp unter Objekt
+
+        const geom = new THREE.PlaneGeometry(w, d, 1, 1);
+        geom.rotateX(-Math.PI/2);
+        const mat = new THREE.MeshBasicMaterial({ color:0x88ccff, transparent:true, opacity:0.18, depthWrite:false });
+        footprint = new THREE.Mesh(geom, mat);
+        footprint.name = 'Footprint';
+        footprint.position.y = yLift;
+        model.add(footprint);
+
+        // Outline für bessere Sichtbarkeit
+        const edges = new THREE.EdgesGeometry(new THREE.PlaneGeometry(w, d).rotateX(-Math.PI/2));
+        const line = new THREE.LineSegments(edges, new THREE.LineBasicMaterial({ color:0x88ccff, transparent:true, opacity:0.7 }));
+        line.position.y = yLift + 0.001;
+        model.add(line);
+        model.userData._footOutline = line;
+      }catch{}
 
       // Animation
       if (gltf.animations?.length){
         mixer = new THREE.AnimationMixer(root);
         model.userData._clip = pickClip(gltf, cfg);
+        console.log('Animations:', gltf.animations.map(a=>({name:a.name,duration:a.duration})));
       }
 
       // Audio
@@ -223,7 +251,7 @@
         const res = await fetch(resolveUrl(cfg.audio.url, cfg)); const buf = await res.arrayBuffer();
         const ab = await listener.context.decodeAudioData(buf);
         snd.setBuffer(ab);
-        snd.setLoop(!!cfg.audio.loop || cfg.audio.loop == null); // default: loop an
+        snd.setLoop(!!cfg.audio.loop || cfg.audio.loop == null);
         snd.setVolume(Number.isFinite(cfg.audio.volume) ? cfg.audio.volume : 0.85);
         audio = snd; model.add(snd);
         $('#btn-mute').hidden = false;
@@ -232,6 +260,17 @@
       }
     }
 
+    function applyTransform(pos){
+      if (!model) return;
+      // Modell auf Trefferposition setzen (Objekt bleibt aufrecht; nur Yaw durch Gesten)
+      model.position.copy(pos);
+      model.rotation.set(0, userYaw, 0);
+      // Footprint sichtbar, solange nicht platziert
+      if (footprint) footprint.visible = !placed;
+      if (model.userData._footOutline) model.userData._footOutline.visible = !placed;
+    }
+
+    function startXR = null;
     async function startXR(cfg){
       if (!navigator.xr) throw new Error('WebXR wird nicht unterstützt');
       const supported = await navigator.xr.isSessionSupported('immersive-ar');
@@ -245,47 +284,104 @@
       refSpace = await xrSession.requestReferenceSpace('local');
       viewerSpace = await xrSession.requestReferenceSpace('viewer');
       hitTestSource = await xrSession.requestHitTestSource({ space: viewerSpace });
+      if (xrSession.requestHitTestSourceForTransientInput){
+        transientSource = await xrSession.requestHitTestSourceForTransientInput({ profile:'generic-touchscreen' });
+      }
 
       xrSession.addEventListener('end', ()=>{
         setStatus('Session beendet');
         $('#hud').hidden = true;
         placed = false;
+        startedClip = false;
         stopAnimationAndAudio();
       });
 
-      // Platzieren via Tap
+      // Tippen = Platzieren (nur wenn noch nicht platziert)
       xrSession.addEventListener('select', ()=>{
-        if (!reticle.visible || !model) return;
-        // Reticle-Matrix -> Model
-        model.matrix.copy(reticle.matrix);
-        model.matrix.decompose(model.position, model.quaternion, model.scale);
-        placed = true;
-        setStatus('Platziert – Animation/Audio laufen');
-        // Autostart
-        if (!startedClip){ startAnimationAndAudio(cfg); startedClip = true; }
-        $('#hud').hidden = false;
+        if (!placed && model){
+          placed = true;
+          setStatus('Platziert – Animation/Audio laufen');
+          if (!startedClip){ startAnimationAndAudio(cfg); startedClip = true; }
+          $('#hud').hidden = false;
+        }
       });
 
-      // Renderloop
+      // Renderloop: Transient-Hit-Tests für Gesten
+      // Einfinger: Position; Zweifinger: Pinch/Rotate
       renderer.setAnimationLoop((t, frame)=>{
         if (!frame) return;
-        const ht = frame.getHitTestResults(hitTestSource);
-        if (ht.length){
-          const pose = ht[0].getPose(refSpace);
-          if (pose?.transform?.matrix){
-            reticle.visible = true;
-            reticle.matrix.fromArray(pose.transform.matrix);
+        const clockDt = renderer.xr.getClock().getDelta();
+
+        // 1) Transient Hits sammeln (Finger)
+        let touchHits = [];
+        if (transientSource){
+          const tr = frame.getHitTestResultsForTransientInput(transientSource);
+          for (const rec of tr){
+            const hit = rec.results?.[0];
+            if (hit){
+              const pose = hit.getPose(refSpace);
+              if (pose?.transform?.position){
+                const p = pose.transform.position;
+                touchHits.push(new THREE.Vector3(p.x, p.y, p.z));
+              }
+            }
           }
-          if (!document.body.__pfGone){ hidePreflight(); setStatus('Tippe, um zu platzieren'); }
-        } else {
-          reticle.visible = false;
         }
-        const dt = renderer.xr.getClock().getDelta();
-        if (mixer) mixer.update(dt);
+
+        // 2) Wenn nicht platziert: Gesten anwenden
+        if (!placed && model){
+          if (touchHits.length === 1){
+            // Drag: Position folgt Finger
+            applyTransform(touchHits[0]);
+            // Reset Gesture-Start (damit frischer Pinch/Rotate sauber skaliert)
+            gestureInitialDist = 0;
+          } else if (touchHits.length >= 2){
+            // Pinch/Rotate auf Basis der beiden ersten Finger
+            const p1 = touchHits[0], p2 = touchHits[1];
+            const v = new THREE.Vector3().subVectors(p2, p1);
+            const dist = Math.hypot(v.x, v.z); // Distanz in XZ-Ebene
+            const ang  = Math.atan2(v.z, v.x); // Winkel in XZ
+
+            if (!gestureInitialDist){
+              gestureInitialDist = dist || 0.0001;
+              gestureInitialYaw = ang;
+              baseScale = model.scale.x || (cfg?.model?.scale||1);
+              baseYaw = userYaw || 0;
+            } else {
+              // Scale
+              const f = dist / (gestureInitialDist||0.0001);
+              const newS = clampScale(baseScale * f);
+              model.scale.setScalar(newS);
+
+              // Rotate (Yaw)
+              const dAng = ang - gestureInitialYaw;
+              userYaw = baseYaw + dAng;
+              model.rotation.set(0, userYaw, 0);
+
+              // Position auf Mittelpunkt setzen (wir nehmen die Mitte der zwei Treffer)
+              const mid = new THREE.Vector3().addVectors(p1, p2).multiplyScalar(0.5);
+              applyTransform(mid);
+            }
+          } else {
+            // Keine transient Hits → optional zentrales Reticle (Fallback)
+            const ht = frame.getHitTestResults(hitTestSource);
+            if (ht.length){
+              const pose = ht[0].getPose(refSpace);
+              if (pose?.transform?.position){
+                const p = pose.transform.position;
+                applyTransform(new THREE.Vector3(p.x, p.y, p.z));
+              }
+            }
+          }
+
+          if (!document.body.__pfGone){ hidePreflight(); setStatus('Mit einem Finger ziehen · Zweifinger Pinch/Rotate · Tippen zum Platzieren'); }
+        }
+
+        if (mixer) mixer.update(clockDt);
         renderer.render(scene, camera);
       });
 
-      setStatus('Scanne Umgebung…', true);
+      setStatus(transientSource ? 'Berühre zum Bewegen · Zwei Finger zum Skalieren/Drehen' : 'Scanne Umgebung… (Tippen platziert in der Mitte)', !transientSource);
     }
 
     function hidePreflight(){
@@ -304,7 +400,7 @@
           // UI-Texte/Poster
           $('#eyebrow').textContent = cfgCache.ui?.welcome?.eyebrow || 'ARea – Szene';
           $('#title').textContent   = cfgCache.ui?.welcome?.title   || cfgCache.meta?.title || 'Scene';
-          $('#desc').textContent    = cfgCache.ui?.welcome?.desc    || 'Erlaube Kamera & bewege das Gerät zum Erkennen der Oberfläche.';
+          $('#desc').textContent    = cfgCache.ui?.welcome?.desc    || 'Mit einem Finger ziehen · Zweifinger Pinch/Rotate · Tippen zum Platzieren';
           const posterUrl = resolveUrl(cfgCache.ui?.welcome?.poster || 'poster.jpg', cfgCache);
           $('#poster').src = posterUrl;
         }
@@ -319,8 +415,10 @@
     $('#btn-replace').onclick = ()=>{
       placed = false;
       startedClip = false;
-      setStatus('Tippe, um neu zu platzieren');
+      setStatus('Mit einem Finger ziehen · Zweifinger Pinch/Rotate · Tippen zum Platzieren');
       stopAnimationAndAudio();
+      if (footprint) footprint.visible = true;
+      if (model?.userData?._footOutline) model.userData._footOutline.visible = true;
     };
 
     let muted=false;
@@ -338,7 +436,7 @@
         cfgCache = await loadConfig();
         $('#eyebrow').textContent = cfgCache.ui?.welcome?.eyebrow || 'ARea – Szene';
         $('#title').textContent   = cfgCache.ui?.welcome?.title   || cfgCache.meta?.title || 'Scene';
-        $('#desc').textContent    = cfgCache.ui?.welcome?.desc    || 'Erlaube Kamera & bewege das Gerät zum Erkennen der Oberfläche.';
+        $('#desc').textContent    = cfgCache.ui?.welcome?.desc    || 'Mit einem Finger ziehen · Zweifinger Pinch/Rotate · Tippen zum Platzieren';
         const posterUrl = resolveUrl(cfgCache.ui?.welcome?.poster || 'poster.jpg', cfgCache);
         $('#poster').src = posterUrl;
         setStatus('Bereit – Start AR');
