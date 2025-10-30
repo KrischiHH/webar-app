@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
-  <title>ARea – AR Viewer1</title>
+  <title>ARea – AR Viewer (Gesten)</title>
   <meta name="theme-color" content="#0b1323" />
   <style>
     :root{ --bg:#0b1323; --panel:#0f1626; --text:#e9eefb; --muted:#a7b4d6; --border:#1f2940; --accent:#7aa2ff; --accent2:#5eead4; --danger:#ef4444; }
@@ -11,7 +11,7 @@
     html,body{ margin:0; height:100%; background:#000; color:var(--text); font:14px/1.45 system-ui,Segoe UI,Inter,Roboto,Arial,sans-serif }
     canvas{ display:block }
 
-    #gate{ position:fixed; inset:0; display:grid; place-items:center; z-index:20; background:transparent }
+    #gate{ position:fixed; inset:0; display:grid; place-items:center; z-index:20 }
     #gate .start{
       padding:12px 16px; border-radius:12px; font-weight:900; cursor:pointer;
       background:linear-gradient(180deg,
@@ -61,10 +61,9 @@
     import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
     import { DRACOLoader } from 'three/addons/loaders/DRACOLoader.js';
 
-    // Version-Log für Diagnose
-    console.info('[area-viewer] v2025-10-30-guard2');
+    console.info('[area-viewer] v-guard3');
 
-    // ---------- Utils ----------
+    // Utils
     const $ = s => document.querySelector(s);
     const setStatus = (t,pulse=false)=>{ const e=$('#status'); e.textContent=t; e.classList.toggle('pulse', !!pulse); };
     const easeOutCubic = x => (1 - Math.pow(1 - x, 3));
@@ -112,7 +111,7 @@
       const json = await res.json(); json.__base = root; return json;
     }
 
-    // ---------- THREE setup ----------
+    // THREE setup
     const renderer = new THREE.WebGLRenderer({ antialias:true, alpha:true, powerPreference:'high-performance' });
     renderer.setPixelRatio(Math.min(devicePixelRatio||1, 2));
     renderer.setSize(innerWidth, innerHeight);
@@ -131,17 +130,16 @@
       camera.aspect = innerWidth/innerHeight; camera.updateProjectionMatrix();
     });
 
-    // ---------- Loaders ----------
+    // Loaders
     const gltfLoader = new GLTFLoader();
     const draco = new DRACOLoader(); draco.setDecoderPath('https://www.gstatic.com/draco/v1/decoders/');
     gltfLoader.setDRACOLoader(draco);
 
-    // ---------- State ----------
+    // State
     let cfg=null;
     let model=null, mixer=null, audio=null;
     let placed=false, startedClip=false;
 
-    // XR session state + guards
     let xrSession=null, refSpace=null, viewerSpace=null, hitTestSource=null, transientSource=null;
     let startingXR=false;
 
@@ -157,15 +155,14 @@
     let drop = { active:false, t0:0, dur:260, s0:1, s1:1, yBase:0, yLift:0.03 };
     let fpFade = { active:false, t0:0, dur:260, op0:0.18, op1:0, line0:0.7, line1:0 };
 
-    // Position für sicheres Platzieren
+    // Position für Platzierung
     let lastDragPos = null;
 
-    // Ray-Pick fürs Re-Edit
+    // Ray-Pick
     const raycaster = new THREE.Raycaster();
     const tmpMat4 = new THREE.Matrix4();
 
-    // ---------- Anim/Audio ----------
-    function pickClip(gltf, cfg){
+    function pickClip(gltf){
       const clips = gltf.animations || [];
       if (!clips.length) return null;
       const want = cfg?.animation?.clipName;
@@ -189,19 +186,17 @@
     }
     function stopAndResetAnimation(){
       if (mixer){
-        mixer.stopAllAction();
+        try{ mixer.stopAllAction(); }catch{}
         mixer.timeScale = 0;
       }
       if (audio?.isPlaying){ (audio.pause||audio.stop).call(audio); }
       startedClip = false;
     }
 
-    // ---------- Model ----------
     async function loadModel(){
       const url = resolveUrl(cfg.model?.url || 'scene.glb', cfg);
       const gltf = await gltfLoader.loadAsync(url);
       const root = gltf.scene || gltf.scenes?.[0];
-      root.updateMatrixWorld(true);
 
       model = new THREE.Group();
       model.name='ModelRoot';
@@ -230,7 +225,7 @@
       // Animation
       if (gltf.animations?.length){
         mixer = new THREE.AnimationMixer(root);
-        model.userData._clip = pickClip(gltf, cfg);
+        model.userData._clip = pickClip(gltf);
         console.log('Animations:', gltf.animations.map(a=>({name:a.name,duration:a.duration})));
       } else {
         mixer = null; model.userData._clip = null;
@@ -286,9 +281,8 @@
       return false;
     }
 
-    // ---------- XR helpers ----------
     async function tryRefSpace(sess, type){
-      try { const s = await sess.requestReferenceSpace(type); if (s) return s; }
+      try { const s = await sess.requestReferenceSpace(type); if (s){ console.log('refSpace OK:', type); return s; } }
       catch(e){ console.warn('requestReferenceSpace failed:', type, e?.message||e); }
       return null;
     }
@@ -298,7 +292,18 @@
           || await tryRefSpace(sess,'viewer');
     }
 
-    // ---------- XR ----------
+    // requestSession: zuerst mit dom-overlay, dann Fallback ohne
+    async function requestARSession(){
+      const withOverlay = { requiredFeatures:['hit-test'], optionalFeatures:['dom-overlay'], domOverlay:{ root: document.body } };
+      try{
+        return await navigator.xr.requestSession('immersive-ar', withOverlay);
+      }catch(e1){
+        console.warn('requestSession mit dom-overlay fehlgeschlagen:', e1?.message||e1);
+        const minimal = { requiredFeatures:['hit-test'] };
+        return await navigator.xr.requestSession('immersive-ar', minimal);
+      }
+    }
+
     async function startXR(){
       if (!navigator.xr){ throw new Error('WebXR wird nicht unterstützt'); }
       const supported = await navigator.xr.isSessionSupported('immersive-ar').catch(()=>false);
@@ -308,26 +313,24 @@
       startingXR = true;
       try{
         if (xrSession){
-          try { await xrSession.end(); } catch {}
+          try{ await xrSession.end(); }catch{}
           xrSession = null;
         }
 
-        const sessionInit = { requiredFeatures:['hit-test'], optionalFeatures:['dom-overlay'], domOverlay:{ root: document.body } };
-        xrSession = await navigator.xr.requestSession('immersive-ar', sessionInit);
+        xrSession = await requestARSession();
 
         renderer.xr.enabled = true;
         await renderer.xr.setSession(xrSession);
 
         refSpace = await getSupportedRefSpace(xrSession);
         if (!refSpace){
-          setStatus('AR-Referenzraum nicht verfügbar (local/local-floor/viewer). Bitte ARCore/Chrome prüfen.');
-          // Session sauber beenden, damit erneuter Start möglich ist
+          setStatus('AR-Referenzraum fehlt (local/local-floor/viewer). Bitte ARCore/Chrome prüfen.');
           try{ await xrSession.end(); }catch{}
           xrSession = null;
           return;
         }
 
-        // viewerSpace optional
+        // viewerSpace optional (für zentrale Vorschau)
         viewerSpace = await tryRefSpace(xrSession,'viewer'); // kann null sein
         hitTestSource = null;
         if (viewerSpace){
@@ -338,6 +341,7 @@
           }
         }
 
+        // Transient HitTest (Finger) optional
         transientSource = null;
         if (xrSession.requestHitTestSourceForTransientInput){
           try{
@@ -448,7 +452,12 @@
               }
             }
 
-            setStatus('Bewegen: Finger ziehen · Skalieren/Drehen: Pinch/Rotate · Tippen platziert');
+            const cap = [
+              'Bearbeiten: Finger ziehen',
+              transientSource ? 'Pinch/Rotate' : '(kein Finger-HitTest)',
+              hitTestSource ? 'Zielhilfe aktiv' : '(keine Zielhilfe)'
+            ].join(' · ');
+            setStatus(cap);
           }
 
           if (drop.active && model){
@@ -487,17 +496,14 @@
       }
     }
 
-    // ---------- UI ----------
+    // UI
     $('#btn-start').addEventListener('click', async ()=>{
       try{
-        $('#btn-start').disabled = true;   // liefert User Activation + Debounce
+        $('#btn-start').disabled = true;
         $('#gate').hidden = true;
         await startXR();
         if (xrSession) $('#hud').hidden = false;
-        else { // StartXR hat früh abgebrochen (kein RefSpace etc.)
-          $('#gate').hidden = false;
-          $('#btn-start').disabled = false;
-        }
+        else { $('#gate').hidden = false; $('#btn-start').disabled = false; }
       }catch(e){
         console.error(e);
         setStatus('Fehler beim Start: ' + (e?.message||e));
@@ -523,7 +529,7 @@
       $('#btn-mute').classList.toggle('danger', muted);
     };
 
-    // ---------- Boot (ohne XR-Start – kein User-Gesture hier!) ----------
+    // Boot (ohne XR-Start)
     (async function(){
       try{
         setStatus('Lade Szene…');
