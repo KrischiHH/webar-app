@@ -174,6 +174,9 @@
     let drop = { active:false, t0:0, dur:260, s0:1, s1:1, yBase:0, yLift:0.03 };
     let fpFade = { active:false, t0:0, dur:260, op0:0.18, op1:0, line0:0.7, line1:0 };
 
+    // Letzte Drag-Position (für sicheres Platzieren)
+    let lastDragPos = null;
+
     function pickClip(gltf, cfg){
       const clips = gltf.animations || [];
       if (!clips.length) return null;
@@ -268,6 +271,7 @@
       if (!model) return;
       model.position.copy(pos);
       model.rotation.set(0, userYaw, 0);
+      lastDragPos = pos.clone();
       if (footprint) footprint.visible = !placed;
       if (footOutline) footOutline.visible = !placed;
     }
@@ -294,49 +298,53 @@
         $('#hud').hidden = true;
         placed = false;
         startedClip = false;
+        lastDragPos = null;
         stopAnimationAndAudio();
         // Footprint zurücksetzen
         if (footprint){ footprint.visible = true; footprint.material.opacity = 0.18; }
         if (footOutline){ footOutline.visible = true; footOutline.material.opacity = 0.7; }
       });
 
-      // Tippen = Platzieren (nur wenn noch nicht platziert)
+      // Tippen = Platzieren (nur wenn vorher interagiert/gezogen)
       xrSession.addEventListener('select', ()=>{
-        if (!placed && model){
-          placed = true;
-          setStatus('Platziert – Animation/Audio laufen');
-
-          // Drop-Animation starten
-          drop.active = true;
-          drop.t0 = performance.now();
-          drop.s1 = model.scale.x;
-          drop.s0 = drop.s1 * 0.85;
-          drop.yBase = model.position.y;
-          // Vor-Setup
-          model.scale.setScalar(drop.s0);
-          model.position.y = drop.yBase + drop.yLift;
-
-          // Footprint ausfaden
-          if (footprint){
-            fpFade.active = true; fpFade.t0 = drop.t0;
-            fpFade.op0 = footprint.material.opacity; fpFade.op1 = 0;
-          }
-          if (footOutline){
-            fpFade.line0 = footOutline.material.opacity; fpFade.line1 = 0;
-          }
-
-          // Autostart Animation/Audio
-          if (!startedClip){ startAnimationAndAudio(cfg); startedClip = true; }
-          $('#hud').hidden = false;
+        if (placed || !model) return;
+        if (!lastDragPos){
+          setStatus('Bitte zuerst Objekt durch Ziehen positionieren');
+          return;
         }
+        placed = true;
+        setStatus('Platziert – Animation/Audio laufen');
+
+        // Drop-Animation starten
+        drop.active = true;
+        drop.t0 = performance.now();
+        drop.s1 = model.scale.x;
+        drop.s0 = drop.s1 * 0.85;
+        drop.yBase = model.position.y;
+
+        model.scale.setScalar(drop.s0);
+        model.position.y = drop.yBase + drop.yLift;
+
+        // Footprint ausfaden
+        if (footprint){
+          fpFade.active = true; fpFade.t0 = drop.t0;
+          fpFade.op0 = footprint.material.opacity; fpFade.op1 = 0;
+        }
+        if (footOutline){
+          fpFade.line0 = footOutline.material.opacity; fpFade.line1 = 0;
+        }
+
+        // Autostart Animation/Audio
+        if (!startedClip){ startAnimationAndAudio(cfg); startedClip = true; }
+        $('#hud').hidden = false;
       });
 
-      // Renderloop: Transient-Hit-Tests für Gesten
+      // Renderloop: nur Gesten steuern Position/Scale/Rotate (kein Auto-Fallback)
       renderer.setAnimationLoop((t, frame)=>{
         if (!frame) return;
         const clockDt = renderer.xr.getClock().getDelta();
 
-        // 1) Transient Hits sammeln (Finger)
+        // Transient Hits sammeln (Finger)
         let touchHits = [];
         if (transientSource){
           const tr = frame.getHitTestResultsForTransientInput(transientSource);
@@ -352,7 +360,7 @@
           }
         }
 
-        // 2) Wenn nicht platziert: Gesten anwenden
+        // Wenn nicht platziert: Gesten anwenden
         if (!placed && model){
           if (touchHits.length === 1){
             // Drag: Position folgt Finger
@@ -382,22 +390,17 @@
               const mid = new THREE.Vector3().addVectors(p1, p2).multiplyScalar(0.5);
               applyTransform(mid);
             }
-          } else {
-            // Fallback: Mittelpunkt-Hit-Test
-            const ht = frame.getHitTestResults(hitTestSource);
-            if (ht.length){
-              const pose = ht[0].getPose(refSpace);
-              if (pose?.transform?.position){
-                const p = pose.transform.position;
-                applyTransform(new THREE.Vector3(p.x, p.y, p.z));
-              }
-            }
           }
 
-          if (!document.body.__pfGone){ hidePreflight(); setStatus('Mit einem Finger ziehen · Zweifinger Pinch/Rotate · Tippen zum Platzieren'); }
+          if (!document.body.__pfGone){
+            hidePreflight();
+            setStatus(transientSource
+              ? 'Mit einem Finger ziehen · Zweifinger Pinch/Rotate · Tippen zum Platzieren'
+              : 'Ihr Browser unterstützt Finger-Hit-Tests nicht – nur Tippen möglich');
+          }
         }
 
-        // 3) Drop-Animation
+        // Drop-Animation
         if (drop.active && model){
           const now = performance.now();
           const k = Math.min(1, (now - drop.t0)/drop.dur);
@@ -412,7 +415,7 @@
           }
         }
 
-        // 4) Footprint-Fade
+        // Footprint-Fade
         if (fpFade.active && (footprint || footOutline)){
           const now = performance.now();
           const k = Math.min(1, (now - fpFade.t0)/fpFade.dur);
@@ -434,7 +437,9 @@
         renderer.render(scene, camera);
       });
 
-      setStatus(transientSource ? 'Berühre zum Bewegen · Zwei Finger zum Skalieren/Drehen' : 'Scanne Umgebung… (Tippen platziert in der Mitte)', !transientSource);
+      setStatus(transientSource
+        ? 'Berühre zum Bewegen · Zwei Finger zum Skalieren/Drehen'
+        : 'Scanne Umgebung… (Finger-Hit-Tests nicht verfügbar)', !transientSource);
     }
 
     function hidePreflight(){
@@ -468,6 +473,7 @@
     $('#btn-replace').onclick = ()=>{
       placed = false;
       startedClip = false;
+      lastDragPos = null;
       setStatus('Mit einem Finger ziehen · Zweifinger Pinch/Rotate · Tippen zum Platzieren');
       stopAnimationAndAudio();
       // Footprint zurücksetzen/einblenden
