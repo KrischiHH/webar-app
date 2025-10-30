@@ -7,7 +7,7 @@
 <style>
   html,body{margin:0;height:100%;overflow:hidden;background:#000;color:#fff;font-family:system-ui}
   #enter{position:fixed;left:50%;top:50%;transform:translate(-50%,-50%);padding:12px 18px;border-radius:12px;border:1px solid #555;background:#111;color:#fff}
-  #msg{position:fixed;left:12px;bottom:12px;opacity:.9}
+  #msg{position:fixed;left:12px;bottom:12px;opacity:.9;background:rgba(0,0,0,.4);padding:6px 8px;border-radius:8px;max-width:min(92vw,780px);font:12px/1.35 system-ui;white-space:pre-wrap}
   #err{position:fixed;left:12px;top:12px;z-index:9;background:#b00020;color:#fff;padding:8px 10px;border-radius:8px;display:none;font:12px/1.35 monospace;max-width:min(92vw,680px);white-space:pre-wrap}
   #badge{position:fixed;right:12px;top:12px;z-index:9;background:#0b1220;color:#9cf;padding:6px 8px;border-radius:8px;font:12px system-ui}
 </style>
@@ -44,7 +44,6 @@ const FORCE = (qs.get('force') || '').toLowerCase();
 if (FORCE === 'webxr') {
   window.__FORCE_MODE = 'webxr';
   window.__NO_NATIVE_REDIRECT__ = true;   // falls irgendwo (global) Redirect-Logik existiert
-  // (optional) Badge aktualisieren:
   try { document.getElementById('badge').textContent = 'WEBXR (forced)'; } catch {}
 }
 let sceneParam = (qs.get('scene') || qs.get('src') || '').trim();
@@ -78,7 +77,11 @@ const cfg = {
   position: [0,0,0],
   rotation: [0,0,0],  // Grad
   scale:[0.6,0.6,0.6],
-  animation: '*'
+  animation: '*',     // '*', 'none', Name oder Index
+  animSpeed: 1.0,
+  animLoop: 'loop',   // 'loop' | 'once' | 'pingpong'
+  animRepetitions: Infinity,
+  animClamp: true     // relevant für 'once'
 };
 
 // ---------- Utils ----------
@@ -101,12 +104,19 @@ async function loadScene(){
       try { return new URL(u, SCENE_JSON).href; } catch { return u; }
     };
 
-    if (j?.model?.url)         cfg.modelUrl = resolveAgainstJson(j.model.url);
-    if (Array.isArray(j?.model?.position)) cfg.position = j.model.position;
+    if (j?.model?.url)                cfg.modelUrl = resolveAgainstJson(j.model.url);
+    if (Array.isArray(j?.model?.position))    cfg.position = j.model.position;
     if (Array.isArray(j?.model?.rotationDeg)) cfg.rotation = j.model.rotationDeg;
     else if (Array.isArray(j?.model?.rotation)) cfg.rotation = j.model.rotation;
-    if (Array.isArray(j?.model?.scale))    cfg.scale    = j.model.scale;
-    if (j?.model?.animation!=null)         cfg.animation= j.model.animation;
+    if (Array.isArray(j?.model?.scale))       cfg.scale    = j.model.scale;
+    if (j?.model?.animation != null)          cfg.animation= j.model.animation;
+
+    // optionale Animation-Extras aus scene.json
+    if (j?.model?.animSpeed != null)          cfg.animSpeed = +j.model.animSpeed || 1.0;
+    if (j?.model?.animLoop)                   cfg.animLoop = String(j.model.animLoop).toLowerCase();
+    if (j?.model?.animRepetitions != null)    cfg.animRepetitions = +j.model.animRepetitions;
+    if (j?.model?.animClamp != null)          cfg.animClamp = !!j.model.animClamp;
+
   }catch(e){
     console.warn(e);
     showErr('scene.json konnte nicht geladen werden:\n'+e.message);
@@ -128,6 +138,25 @@ function applyQueryFallback(){
 
   const sx = parseFloat(qs.get('sx')), sy = parseFloat(qs.get('sy')), sz = parseFloat(qs.get('sz'));
   if ([sx,sy,sz].some(v=>!isNaN(v))) cfg.scale = [sx||1, sy||1, sz||1];
+
+  // Animation via Query
+  const anim = qs.get('anim');
+  if (anim !== null) {
+    // "*" | "none" | name | index
+    const asNum = Number(anim);
+    cfg.animation = (anim === '*' || anim === 'none' || Number.isNaN(asNum)) ? anim : asNum;
+  }
+  const animSpeed = parseFloat(qs.get('animSpeed'));
+  if (!Number.isNaN(animSpeed)) cfg.animSpeed = animSpeed;
+
+  const animLoop = (qs.get('animLoop') || '').toLowerCase();
+  if (animLoop) cfg.animLoop = animLoop;
+
+  const animReps = parseFloat(qs.get('animReps'));
+  if (!Number.isNaN(animReps)) cfg.animRepetitions = animReps;
+
+  const animClamp = qs.get('animClamp');
+  if (animClamp !== null) cfg.animClamp = /^(1|true|yes|on)$/i.test(animClamp);
 }
 
 // ---------- THREE Init ----------
@@ -165,16 +194,40 @@ function init() {
 }
 
 // ---------- Model-Animation ----------
+function configureAction(action){
+  const loop = (cfg.animLoop||'loop').toLowerCase();
+  let mode = THREE.LoopRepeat, reps = Infinity;
+
+  if (loop === 'once') {
+    mode = THREE.LoopOnce; reps = 1;
+    action.clampWhenFinished = cfg.animClamp !== false;
+  } else if (loop === 'pingpong') {
+    mode = THREE.LoopPingPong; reps = Infinity;
+  }
+
+  const finalReps = Number.isFinite(cfg.animRepetitions) ? cfg.animRepetitions : reps;
+  action.setLoop(mode, finalReps);
+  action.timeScale = cfg.animSpeed || 1.0;
+  return action;
+}
+
 function playClips(){
   if (!mixer || !clips.length) return;
   const a = cfg.animation;
   if (a==='none') return;
+
+  // Stoppe evtl. vorherige Aktionen
+  mixer.stopAllAction();
+
   if (a==='*'){
-    clips.forEach(c=>mixer.clipAction(c).play());
+    clips.forEach(c=>configureAction(mixer.clipAction(c)).play());
   } else if (typeof a==='string'){
-    const c = clips.find(c=>c.name===a) || clips[0]; mixer.clipAction(c).play();
+    const c = clips.find(c=>c.name===a) || clips[0];
+    if (c) configureAction(mixer.clipAction(c)).play();
   } else {
-    const idx = Math.max(0, Math.min(clips.length-1, parseInt(a||0,10))); mixer.clipAction(clips[idx]).play();
+    const idx = Math.max(0, Math.min(clips.length-1, parseInt(a||0,10)));
+    const c = clips[idx];
+    if (c) configureAction(mixer.clipAction(c)).play();
   }
 }
 
@@ -226,6 +279,13 @@ async function onSelect() {
       if (clips.length) {
         mixer = new THREE.AnimationMixer(model);
         playClips();
+
+        // Info-Overlay mit verfügbaren Animationen
+        try {
+          const names = clips.map(c=>c.name||'(unnamed)').join(', ');
+          const info = names ? ` · Animationen: ${names}` : ' · Keine Animationen im GLTF';
+          document.getElementById('msg').textContent += info;
+        } catch {}
       }
     } catch (err) {
       console.error('GLTF load failed', err);
