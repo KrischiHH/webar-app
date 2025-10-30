@@ -11,8 +11,8 @@
     html,body{ margin:0; height:100%; background:#000; color:var(--text); font:14px/1.45 system-ui,Segoe UI,Inter,Roboto,Arial,sans-serif }
     canvas{ display:block }
 
-    /* Minimaler Gate-Button → liefert die nötige User Activation für WebXR */
-    #gate{ position:fixed; inset:0; display:grid; place-items:center; z-index:20; }
+    /* Gate-Button liefert die nötige User Activation für WebXR */
+    #gate{ position:fixed; inset:0; display:grid; place-items:center; z-index:20; background:transparent }
     #gate .start{
       padding:12px 16px; border-radius:12px; font-weight:900; cursor:pointer;
       background:linear-gradient(180deg,
@@ -20,6 +20,7 @@
         color-mix(in srgb, var(--panel) 85%, var(--accent2) 15%));
       border:1px solid var(--border); color:var(--text); box-shadow:0 10px 24px rgba(0,0,0,.35);
     }
+    #gate .start[disabled]{ opacity:.6; cursor:not-allowed }
 
     #hud{ position:fixed; left:0; right:0; bottom:env(safe-area-inset-bottom); padding:10px; display:flex; justify-content:center; pointer-events:auto; z-index:9 }
     #hud .bar{ display:flex; gap:8px; padding:8px; border:1px solid var(--border); border-radius:999px; background:color-mix(in srgb, var(--panel) 86%, transparent); box-shadow:0 10px 24px rgba(0,0,0,.35) }
@@ -137,7 +138,10 @@
     let cfg=null;
     let model=null, mixer=null, audio=null;
     let placed=false, startedClip=false;
+
+    // XR session state + guards
     let xrSession=null, refSpace=null, viewerSpace=null, hitTestSource=null, transientSource=null;
+    let startingXR=false; // debounce/guard
 
     // Gesten
     let userYaw=0, baseYaw=0, baseScale=1;
@@ -267,7 +271,7 @@
       const m = tmpMat4.fromArray(pose.transform.matrix);
       const o = new THREE.Vector3().setFromMatrixPosition(m);
       const dir = new THREE.Vector3(0,0,-1).applyMatrix4(m).sub(o).normalize();
-      const raycaster = new THREE.Raycaster(o, dir);
+      raycaster.set(o, dir);
       const hits = raycaster.intersectObject(model, true);
       if (hits.length){
         placed = false;
@@ -280,169 +284,215 @@
       return false;
     }
 
-    // ---------- XR ----------
+    // ---------- XR helpers ----------
+    async function getSupportedRefSpace(sess){
+      const types = ['local', 'local-floor', 'viewer'];
+      for (const t of types){
+        try { const s = await sess.requestReferenceSpace(t); if (s) return s; } catch {}
+      }
+      throw new Error('Keine unterstützte Reference Space (local/local-floor/viewer)');
+    }
+
     async function startXR(){
       if (!navigator.xr) throw new Error('WebXR wird nicht unterstützt');
       const supported = await navigator.xr.isSessionSupported('immersive-ar');
       if (!supported) throw new Error('AR-Session wird auf diesem Gerät/Browser nicht unterstützt');
 
-      const sessionInit = { requiredFeatures:['hit-test'], optionalFeatures:['dom-overlay'], domOverlay:{ root: document.body } };
-      xrSession = await navigator.xr.requestSession('immersive-ar', sessionInit);
-
-      renderer.xr.enabled = true;
-      await renderer.xr.setSession(xrSession);
-      refSpace = await xrSession.requestReferenceSpace('local');
-      viewerSpace = await xrSession.requestReferenceSpace('viewer');
-      hitTestSource = await xrSession.requestHitTestSource({ space: viewerSpace });
-      if (xrSession.requestHitTestSourceForTransientInput){
-        transientSource = await xrSession.requestHitTestSourceForTransientInput({ profile:'generic-touchscreen' });
-      }
-
-      xrSession.addEventListener('end', ()=>{
-        setStatus('Session beendet');
-        $('#hud').hidden = true;
-        placed = false; startedClip = false; lastDragPos = null;
-        stopAndResetAnimation();
-        if (footprint){ footprint.visible = true; footprint.material.opacity = 0.18; }
-        if (footOutline){ footOutline.visible = true; footOutline.material.opacity = 0.7; }
-        // Gate wieder einblenden, damit erneuter Start möglich ist
-        $('#gate').hidden = false;
-      });
-
-      xrSession.addEventListener('select', (ev)=>{
-        const frame = ev.frame;
-        const src = ev.inputSource;
-
-        if (tryEnterEditModeViaPick(frame, src)) return;
-
-        if (!placed && model){
-          if (!lastDragPos){
-            setStatus('Zuerst Objekt positionieren (Ziehen) – dann Tippen zum Platzieren');
-            return;
-          }
-          placed = true;
-          setStatus('Platziert – Animation/Audio laufen');
-
-          drop.active = true; drop.t0 = performance.now();
-          drop.s1 = model.scale.x; drop.s0 = drop.s1 * 0.85;
-          drop.yBase = model.position.y;
-          model.scale.setScalar(drop.s0);
-          model.position.y = drop.yBase + drop.yLift;
-
-          if (footprint){
-            fpFade.active = true; fpFade.t0 = drop.t0;
-            fpFade.op0 = footprint.material.opacity; fpFade.op1 = 0;
-          }
-          if (footOutline){
-            fpFade.line0 = footOutline.material.opacity; fpFade.line1 = 0;
-          }
-
-          startAnimationAndAudio(); startedClip = true;
-          $('#hud').hidden = false;
+      // Guard gegen mehrfaches Starten oder parallele Sessions
+      if (startingXR) return;
+      startingXR = true;
+      try{
+        if (xrSession){
+          try { await xrSession.end(); } catch {}
+          xrSession = null;
         }
-      });
 
-      renderer.setAnimationLoop((t, frame)=>{
-        if (!frame) return;
-        const dt = renderer.xr.getClock().getDelta();
+        const sessionInit = { requiredFeatures:['hit-test'], optionalFeatures:['dom-overlay'], domOverlay:{ root: document.body } };
+        xrSession = await navigator.xr.requestSession('immersive-ar', sessionInit);
 
-        if (!placed && model){
-          let handled = false;
+        renderer.xr.enabled = true;
+        await renderer.xr.setSession(xrSession);
+        refSpace = await getSupportedRefSpace(xrSession);
 
-          if (transientSource){
-            const tr = frame.getHitTestResultsForTransientInput(transientSource);
-            const touchHits = [];
-            for (const rec of tr){
-              const hit = rec.results?.[0];
-              if (hit){
-                const pose = hit.getPose(refSpace);
-                if (pose?.transform?.position){
-                  const p = pose.transform.position;
-                  touchHits.push(new THREE.Vector3(p.x, p.y, p.z));
+        // viewerSpace für Hit-Test-Quelle (kann auf manchen Geräten fehlschlagen)
+        try{
+          viewerSpace = await xrSession.requestReferenceSpace('viewer');
+        }catch{
+          viewerSpace = null;
+          console.warn('viewer reference space nicht verfügbar – zentrale Vorschau deaktiviert, nur Finger-Hit-Tests');
+        }
+
+        hitTestSource = null;
+        if (viewerSpace){
+          try{
+            hitTestSource = await xrSession.requestHitTestSource({ space: viewerSpace });
+          }catch(e){
+            console.warn('HitTestSource (viewer) fehlgeschlagen:', e);
+          }
+        }
+
+        transientSource = null;
+        if (xrSession.requestHitTestSourceForTransientInput){
+          try{
+            transientSource = await xrSession.requestHitTestSourceForTransientInput({ profile:'generic-touchscreen' });
+          }catch(e){
+            console.warn('Transient HitTestSource nicht verfügbar:', e);
+          }
+        }
+
+        xrSession.addEventListener('end', ()=>{
+          xrSession = null; // wichtig: freigeben
+          setStatus('Session beendet');
+          $('#hud').hidden = true;
+          placed = false; startedClip = false; lastDragPos = null;
+          stopAndResetAnimation();
+          if (footprint){ footprint.visible = true; footprint.material.opacity = 0.18; }
+          if (footOutline){ footOutline.visible = true; footOutline.material.opacity = 0.7; }
+          // Gate wieder einblenden
+          $('#gate').hidden = false;
+          $('#btn-start').disabled = false;
+        });
+
+        xrSession.addEventListener('select', (ev)=>{
+          const frame = ev.frame;
+          const src = ev.inputSource;
+
+          if (tryEnterEditModeViaPick(frame, src)) return;
+
+          if (!placed && model){
+            if (!lastDragPos){
+              setStatus('Zuerst Objekt positionieren (Ziehen) – dann Tippen zum Platzieren');
+              return;
+            }
+            placed = true;
+            setStatus('Platziert – Animation/Audio laufen');
+
+            drop.active = true; drop.t0 = performance.now();
+            drop.s1 = model.scale.x; drop.s0 = drop.s1 * 0.85;
+            drop.yBase = model.position.y;
+            model.scale.setScalar(drop.s0);
+            model.position.y = drop.yBase + drop.yLift;
+
+            if (footprint){
+              fpFade.active = true; fpFade.t0 = drop.t0;
+              fpFade.op0 = footprint.material.opacity; fpFade.op1 = 0;
+            }
+            if (footOutline){
+              fpFade.line0 = footOutline.material.opacity; fpFade.line1 = 0;
+            }
+
+            startAnimationAndAudio(); startedClip = true;
+            $('#hud').hidden = false;
+          }
+        });
+
+        renderer.setAnimationLoop((t, frame)=>{
+          if (!frame) return;
+          const dt = renderer.xr.getClock().getDelta();
+
+          if (!placed && model){
+            let handled = false;
+
+            if (transientSource){
+              const tr = frame.getHitTestResultsForTransientInput(transientSource);
+              const touchHits = [];
+              for (const rec of tr){
+                const hit = rec.results?.[0];
+                if (hit){
+                  const pose = hit.getPose(refSpace);
+                  if (pose?.transform?.position){
+                    const p = pose.transform.position;
+                    touchHits.push(new THREE.Vector3(p.x, p.y, p.z));
+                  }
+                }
+              }
+              if (touchHits.length === 1){
+                applyTransform(touchHits[0]); gestureInitialDist = 0; handled = true;
+              } else if (touchHits.length >= 2){
+                const p1 = touchHits[0], p2 = touchHits[1];
+                const v = new THREE.Vector3().subVectors(p2, p1);
+                const dist = Math.hypot(v.x, v.z);
+                const ang  = Math.atan2(v.z, v.x);
+                if (!gestureInitialDist){
+                  gestureInitialDist = dist || 0.0001;
+                  gestureInitialYaw = ang;
+                  baseScale = model.scale.x || (cfg?.model?.scale||1);
+                  baseYaw = userYaw || 0;
+                } else {
+                  const f = dist / (gestureInitialDist||0.0001);
+                  model.scale.setScalar(clampScale(baseScale * f));
+                  userYaw = baseYaw + (ang - gestureInitialYaw);
+                  model.rotation.set(0, userYaw, 0);
+                  const mid = new THREE.Vector3().addVectors(p1, p2).multiplyScalar(0.5);
+                  applyTransform(mid);
+                  handled = true;
                 }
               }
             }
-            if (touchHits.length === 1){
-              applyTransform(touchHits[0]); gestureInitialDist = 0; handled = true;
-            } else if (touchHits.length >= 2){
-              const p1 = touchHits[0], p2 = touchHits[1];
-              const v = new THREE.Vector3().subVectors(p2, p1);
-              const dist = Math.hypot(v.x, v.z);
-              const ang  = Math.atan2(v.z, v.x);
-              if (!gestureInitialDist){
-                gestureInitialDist = dist || 0.0001;
-                gestureInitialYaw = ang;
-                baseScale = model.scale.x || (cfg?.model?.scale||1);
-                baseYaw = userYaw || 0;
-              } else {
-                const f = dist / (gestureInitialDist||0.0001);
-                model.scale.setScalar(clampScale(baseScale * f));
-                userYaw = baseYaw + (ang - gestureInitialYaw);
-                model.rotation.set(0, userYaw, 0);
-                const mid = new THREE.Vector3().addVectors(p1, p2).multiplyScalar(0.5);
-                applyTransform(mid);
-                handled = true;
+
+            // Zentrale Vorschau nur, wenn viewerSpace/hitTestSource verfügbar
+            if (!handled && hitTestSource){
+              const ht = frame.getHitTestResults(hitTestSource);
+              if (ht.length){
+                const pose = ht[0].getPose(refSpace);
+                if (pose?.transform?.position){
+                  const p = pose.transform.position;
+                  applyTransform(new THREE.Vector3(p.x, p.y, p.z));
+                }
               }
             }
+
+            setStatus('Bewegen: Finger ziehen · Skalieren/Drehen: Pinch/Rotate · Tippen platziert');
           }
 
-          if (!handled && hitTestSource){
-            const ht = frame.getHitTestResults(hitTestSource);
-            if (ht.length){
-              const pose = ht[0].getPose(refSpace);
-              if (pose?.transform?.position){
-                const p = pose.transform.position;
-                applyTransform(new THREE.Vector3(p.x, p.y, p.z));
-              }
+          if (drop.active && model){
+            const now = performance.now();
+            const k = Math.min(1, (now - drop.t0)/drop.dur);
+            const e = easeOutCubic(k);
+            const s = THREE.MathUtils.lerp(drop.s0, drop.s1, e);
+            const y = drop.yBase + drop.yLift*(1 - e);
+            model.scale.setScalar(s);
+            model.position.y = y;
+            if (k >= 1){ drop.active = false; model.position.y = drop.yBase; }
+          }
+
+          if (fpFade.active && (footprint || footOutline)){
+            const now = performance.now();
+            const k = Math.min(1, (now - fpFade.t0)/fpFade.dur);
+            const e = easeOutCubic(k);
+            if (footprint){
+              footprint.material.opacity = THREE.MathUtils.lerp(fpFade.op0, fpFade.op1, e);
+              if (k >= 1) footprint.visible = false;
             }
+            if (footOutline){
+              footOutline.material.opacity = THREE.MathUtils.lerp(fpFade.line0, fpFade.line1, e);
+              if (k >= 1) footOutline.visible = false;
+            }
+            if (k >= 1) fpFade.active = false;
           }
 
-          setStatus('Bewegen: Finger ziehen · Skalieren/Drehen: Pinch/Rotate · Tippen platziert');
-        }
+          if (mixer) mixer.update(dt);
+          renderer.render(scene, camera);
+        });
 
-        if (drop.active && model){
-          const now = performance.now();
-          const k = Math.min(1, (now - drop.t0)/drop.dur);
-          const e = easeOutCubic(k);
-          const s = THREE.MathUtils.lerp(drop.s0, drop.s1, e);
-          const y = drop.yBase + drop.yLift*(1 - e);
-          model.scale.setScalar(s);
-          model.position.y = y;
-          if (k >= 1){ drop.active = false; model.position.y = drop.yBase; }
-        }
-
-        if (fpFade.active && (footprint || footOutline)){
-          const now = performance.now();
-          const k = Math.min(1, (now - fpFade.t0)/fpFade.dur);
-          const e = easeOutCubic(k);
-          if (footprint){
-            footprint.material.opacity = THREE.MathUtils.lerp(fpFade.op0, fpFade.op1, e);
-            if (k >= 1) footprint.visible = false;
-          }
-          if (footOutline){
-            footOutline.material.opacity = THREE.MathUtils.lerp(fpFade.line0, fpFade.line1, e);
-            if (k >= 1) footOutline.visible = false;
-          }
-          if (k >= 1) fpFade.active = false;
-        }
-
-        if (mixer) mixer.update(dt);
-        renderer.render(scene, camera);
-      });
-
-      setStatus('Bewegen: Finger ziehen · Skalieren/Drehen: Pinch/Rotate · Tippen platziert');
+        setStatus('Bewegen: Finger ziehen · Skalieren/Drehen: Pinch/Rotate · Tippen platziert');
+      } finally {
+        startingXR = false;
+      }
     }
 
     // ---------- UI ----------
     $('#btn-start').addEventListener('click', async ()=>{
       try{
-        $('#gate').hidden = true;           // liefert User Activation
+        $('#btn-start').disabled = true;   // liefert User Activation + Debounce
+        $('#gate').hidden = true;
         await startXR();
         $('#hud').hidden = false;
       }catch(e){
-        $('#gate').hidden = false;          // zurück, damit man erneut versuchen kann
         console.error(e);
-        setStatus('Fehler beim Start: ' + (e?.message||e), false);
+        setStatus('Fehler beim Start: ' + (e?.message||e));
+        $('#gate').hidden = false;
+        $('#btn-start').disabled = false;
       }
     });
 
