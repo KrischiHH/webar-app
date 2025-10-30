@@ -1,231 +1,288 @@
 <!doctype html>
 <html lang="de">
 <head>
-  <meta charset="utf-8"/>
-  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover"/>
-  <title>Surface AR – Native (Full-Bleed, Animation)</title>
-  <script type="module" src="https://unpkg.com/@google/model-viewer/dist/model-viewer.min.js"></script>
-  <style>
-    :root{color-scheme:dark light}
-    *,*::before,*::after{box-sizing:border-box}
-    html,body{margin:0;height:100%;background:#000;font-family:system-ui,-apple-system,Segoe UI,Roboto,Helvetica,Arial}
-    model-viewer{position:fixed; inset:0; width:100vw; height:100svh; display:block; background:#000}
-    button[slot="ar-button"]{
-      position:absolute; left:max(12px,env(safe-area-inset-left)); top:max(12px,env(safe-area-inset-top));
-      padding:.75rem 1rem; border-radius:12px; border:1px solid rgba(255,255,255,.25); background:#111; color:#fff
-    }
-    /* HUD */
-    #hud{position:fixed; right:max(12px,env(safe-area-inset-right)); bottom:max(12px,env(safe-area-inset-bottom));
-      display:flex; gap:8px; z-index:3; background:rgba(0,0,0,.35); border:1px solid rgba(255,255,255,.15);
-      padding:6px; border-radius:999px; backdrop-filter:blur(6px)}
-    #hud.hidden{display:none}
-    #hud button{all:unset; cursor:pointer; padding:8px 12px; border-radius:10px; color:#fff; user-select:none}
-    #err{position:fixed;left:12px;top:12px;z-index:9;background:#b00020;color:#fff;padding:8px 10px;border-radius:8px;display:none;font:12px/1.35 monospace;max-width:min(92vw,680px);white-space:pre-wrap}
-  </style>
+<meta charset="utf-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1"/>
+<title>Surface AR – WebXR Hit-Test (mit Animation)</title>
+<style>
+  html,body{margin:0;height:100%;overflow:hidden;background:#000;color:#fff;font-family:system-ui}
+  #enter{position:fixed;left:50%;top:50%;transform:translate(-50%,-50%);padding:12px 18px;border-radius:12px;border:1px solid #555;background:#111;color:#fff}
+  #msg{position:fixed;left:12px;bottom:12px;opacity:.9}
+  #err{position:fixed;left:12px;top:12px;z-index:9;background:#b00020;color:#fff;padding:8px 10px;border-radius:8px;display:none;font:12px/1.35 monospace;max-width:min(92vw,680px);white-space:pre-wrap}
+  #badge{position:fixed;right:12px;top:12px;z-index:9;background:#0b1220;color:#9cf;padding:6px 8px;border-radius:8px;font:12px system-ui}
+</style>
+<script type="importmap">
+{
+  "imports": {
+    "three": "https://unpkg.com/three@0.160.0/build/three.module.js",
+    "three/addons/": "https://unpkg.com/three@0.160.0/examples/jsm/"
+  }
+}
+</script>
 </head>
 <body>
   <div id="err"></div>
+  <button id="enter">Start AR</button>
+  <div id="msg">Android Chrome empfohlen · Tippe auf den Boden, um das Modell zu platzieren</div>
+  <div id="badge">WEBXR BUILD</div>
 
-  <model-viewer id="mv"
-    src="https://modelviewer.dev/shared-assets/models/Astronaut.glb"
-    ar ar-modes="scene-viewer quick-look webxr"
-    camera-controls autoplay
-    environment-image="https://modelviewer.dev/shared-assets/environments/neutral.hdr"
-    exposure="1" shadow-intensity="1"
-    interaction-prompt="none"
-    camera-orbit="0deg 70deg auto"
-    camera-target="auto"
-    field-of-view="30deg"
-    poster="">
-    <button slot="ar-button" id="arBtn">In AR öffnen</button>
-  </model-viewer>
+<script type="module">
+import * as THREE from 'three';
+import { GLTFLoader }  from 'three/addons/loaders/GLTFLoader.js';
+import { DRACOLoader } from 'three/addons/loaders/DRACOLoader.js';
 
-  <!-- Mini-HUD -->
-  <div id="hud" class="hidden">
-    <button id="btnPlay" title="Play/Pause">▶︎/⏸</button>
-    <button id="btnMute" title="Ton an/aus">🔊</button>
-  </div>
+let camera, scene, renderer, reticle, controller, hitTestSource=null, hitTestSourceRequested=false;
+let model=null, mixer=null, clips=[];
+const clock = new THREE.Clock();
 
-<script>
-  const qs = new URLSearchParams(location.search);
-  let scene = (qs.get('scene') || qs.get('src') || '').trim();
-  const workerBase = (qs.get('base') || 'https://area-publish.area-webar.workers.dev').replace(/\/$/, '');
-  const overrideGlb  = (qs.get('glb')  || '').trim();
-  const overrideUsdz = (qs.get('usdz') || '').trim();
+const showErr = (m)=>{ const el=document.getElementById('err'); el.textContent=m; el.style.display='block'; };
 
-  const isHttp = (u)=> /^https?:\/\//i.test(u);
-  const isDataOrBlob = (u)=> u.startsWith('data:') || u.startsWith('blob:');
-  const endsWithAny = (u,exts)=> exts.some(ext=> u.toLowerCase().endsWith(ext));
+/* ========= Param-Normalisierung ========= */
+const qs = new URLSearchParams(location.search);
+  // --- Force-Param: niemals auf Native umleiten, wenn ?force=webxr ---
+const FORCE = (qs.get('force') || '').toLowerCase();
+if (FORCE === 'webxr') {
+  window.__FORCE_MODE = 'webxr';
+  window.__NO_NATIVE_REDIRECT__ = true;   // falls irgendwo (global) Redirect-Logik existiert
+  // (optional) Badge aktualisieren:
+  try { document.getElementById('badge').textContent = 'WEBXR (forced)'; } catch {}
+}
+let sceneParam = (qs.get('scene') || qs.get('src') || '').trim();
+const workerBase = (qs.get('base') || 'https://area-publish.area-webar.workers.dev').replace(/\/$/, '');
+const overrideGlb = (qs.get('glb') || '').trim();
 
-  let SCENE_GLB = '';
-  let SCENE_JSON = '';
+const isHttp     = u => /^https?:\/\//i.test(u);
+const isDataOrBlob = u => /^data:|^blob:/i.test(u);
+const isGlbLike  = u => /\.(?:glb|gltf)(?:[?#]|$)/i.test(u);
 
-  if (overrideGlb) {
-    SCENE_GLB = overrideGlb;
-  } else if (scene) {
-    if (isDataOrBlob(scene)) {
-      SCENE_JSON = scene;
-    } else if (isHttp(scene)) {
-      if (endsWithAny(scene, ['.glb','.gltf'])) SCENE_GLB = scene;
-      else SCENE_JSON = scene;
-    } else {
-      const id = scene.replace(/\/+$/,'');
-      SCENE_GLB  = `${workerBase}/scenes/${encodeURIComponent(id)}/scene.glb`;
-      SCENE_JSON = `${workerBase}/scenes/${encodeURIComponent(id)}/scene.json`;
-    }
+let SCENE_GLB = '';
+let SCENE_JSON = '';
+
+if (overrideGlb) {
+  SCENE_GLB = overrideGlb;
+} else if (sceneParam) {
+  if (isDataOrBlob(sceneParam)) {
+    SCENE_JSON = sceneParam;
+  } else if (isHttp(sceneParam)) {
+    if (isGlbLike(sceneParam)) SCENE_GLB = sceneParam;
+    else SCENE_JSON = sceneParam;
+  } else {
+    const id = sceneParam.replace(/\/+$/,'');
+    SCENE_GLB  = `${workerBase}/scenes/${encodeURIComponent(id)}/scene.glb`;
+    SCENE_JSON = `${workerBase}/scenes/${encodeURIComponent(id)}/scene.json`;
+  }
+}
+
+const cfg = {
+  modelUrl: SCENE_GLB || 'https://modelviewer.dev/shared-assets/models/Astronaut.glb',
+  position: [0,0,0],
+  rotation: [0,0,0],  // Grad
+  scale:[0.6,0.6,0.6],
+  animation: '*'
+};
+
+// ---------- Utils ----------
+const rad2deg = r => (r||0) * 180/Math.PI;
+const deg2rad = d => (d||0) * Math.PI/180;
+
+// ---------- Szene aus externer JSON (optional) ----------
+async function loadScene(){
+  if (SCENE_GLB) { cfg.modelUrl = SCENE_GLB; return; }
+  if (!SCENE_JSON) return;
+
+  try{
+    const r = await fetch(SCENE_JSON, {cache:'no-cache', mode:'cors'});
+    if(!r.ok) throw new Error('scene.json Load '+r.status+' '+r.statusText);
+    const j = await r.json();
+
+    const resolveAgainstJson = (u)=>{
+      if (!u) return u;
+      if (isHttp(u) || isDataOrBlob(u)) return u;
+      try { return new URL(u, SCENE_JSON).href; } catch { return u; }
+    };
+
+    if (j?.model?.url)         cfg.modelUrl = resolveAgainstJson(j.model.url);
+    if (Array.isArray(j?.model?.position)) cfg.position = j.model.position;
+    if (Array.isArray(j?.model?.rotationDeg)) cfg.rotation = j.model.rotationDeg;
+    else if (Array.isArray(j?.model?.rotation)) cfg.rotation = j.model.rotation;
+    if (Array.isArray(j?.model?.scale))    cfg.scale    = j.model.scale;
+    if (j?.model?.animation!=null)         cfg.animation= j.model.animation;
+  }catch(e){
+    console.warn(e);
+    showErr('scene.json konnte nicht geladen werden:\n'+e.message);
+  }
+}
+
+// -------- Fallbacks aus Query --------
+function applyQueryFallback(){
+  const glb = qs.get('glb');
+  if (glb) cfg.modelUrl = glb;
+
+  const rx = qs.get('rx'), ry = qs.get('ry'), rz = qs.get('rz');
+  if (rx!=null || ry!=null || rz!=null){
+    cfg.rotation = [rad2deg(parseFloat(rx)), rad2deg(parseFloat(ry)), rad2deg(parseFloat(rz))].map(v=>isFinite(v)?v:0);
   }
 
-  const showErr = (m)=>{ const el=document.getElementById('err'); el.textContent=m; el.style.display='block'; };
+  const px = parseFloat(qs.get('px')), py = parseFloat(qs.get('py')), pz = parseFloat(qs.get('pz'));
+  if ([px,py,pz].some(v=>!isNaN(v))) cfg.position = [px||0, py||0, pz||0];
 
-  const mv = document.getElementById('mv');
-  const hud = document.getElementById('hud');
-  const btnPlay = document.getElementById('btnPlay');
-  const btnMute = document.getElementById('btnMute');
-  const arBtn   = document.getElementById('arBtn');
+  const sx = parseFloat(qs.get('sx')), sy = parseFloat(qs.get('sy')), sz = parseFloat(qs.get('sz'));
+  if ([sx,sy,sz].some(v=>!isNaN(v))) cfg.scale = [sx||1, sy||1, sz||1];
+}
 
-  // Basiskonfig mit UI/Audio-Flags wie im scene-viewer
-  let cfg = {
-    model:{ url: SCENE_GLB || "https://modelviewer.dev/shared-assets/models/Astronaut.glb", usdzUrl:null, animation:"*" },
-    target:{ previewUrl:null },
-    audio:{ src:null, autoplay:"withAnimation", loop:true, volume:0.85 },
-    ui:{
-      showPlayPause:false,
-      showMute:false,
-      showAR:true,
-      arLabel:"In AR öffnen"
-    }
-  };
+// ---------- THREE Init ----------
+function init() {
+  scene = new THREE.Scene();
+  camera = new THREE.PerspectiveCamera();
+  const hemi = new THREE.HemisphereLight(0xffffff, 0x444444, 1.2); scene.add(hemi);
+  const dir = new THREE.DirectionalLight(0xffffff, 1.0); dir.position.set(0,6,0); scene.add(dir);
 
-  // Audio-Objekt (optional)
-  let audio=null, audioReady=false, muted=false;
-  function setupAudio(){
-    if (!cfg.audio?.src) return;
-    audio = new Audio(cfg.audio.src);
-    audio.crossOrigin = "anonymous";
-    audio.loop = !!cfg.audio.loop;
-    audio.volume = Number.isFinite(cfg.audio.volume) ? cfg.audio.volume : 0.85;
-    audioReady = true;
+  renderer = new THREE.WebGLRenderer({antialias:true, alpha:true});
+  renderer.setPixelRatio(window.devicePixelRatio);
+  renderer.setSize(window.innerWidth, window.innerHeight);
+  renderer.xr.enabled = true;
+  renderer.outputColorSpace = THREE.SRGBColorSpace;
+  renderer.toneMapping = THREE.ACESFilmicToneMapping;
+  renderer.toneMappingExposure = 1.0;
+  document.body.appendChild(renderer.domElement);
+
+  // Reticle
+  const ring = new THREE.RingGeometry(0.07, 0.08, 32).rotateX(-Math.PI/2);
+  const mat = new THREE.MeshBasicMaterial({color:0x66ccff});
+  reticle = new THREE.Mesh(ring, mat);
+  reticle.matrixAutoUpdate = false;
+  reticle.visible = false;
+  scene.add(reticle);
+
+  controller = renderer.xr.getController(0);
+  controller.addEventListener('select', onSelect);
+  scene.add(controller);
+
+  addEventListener('resize', ()=>renderer.setSize(innerWidth, innerHeight));
+  document.getElementById('enter').addEventListener('click', startAR);
+
+  try { window.opener && window.opener.postMessage({ type:'webar-ready' }, location.origin); } catch {}
+}
+
+// ---------- Model-Animation ----------
+function playClips(){
+  if (!mixer || !clips.length) return;
+  const a = cfg.animation;
+  if (a==='none') return;
+  if (a==='*'){
+    clips.forEach(c=>mixer.clipAction(c).play());
+  } else if (typeof a==='string'){
+    const c = clips.find(c=>c.name===a) || clips[0]; mixer.clipAction(c).play();
+  } else {
+    const idx = Math.max(0, Math.min(clips.length-1, parseInt(a||0,10))); mixer.clipAction(clips[idx]).play();
   }
-  function setMuted(on){
-    muted = !!on;
-    if (audio && audioReady) audio.muted = muted;
-    btnMute.textContent = muted ? '🔈' : '🔊';
-  }
+}
 
-  (async () => {
+/* ---------- Flexible GLB/GLTF Loader ---------- */
+async function loadGLTFFlexible(url) {
+  const res = await fetch(url, { mode: 'cors', credentials: 'omit' });
+  if (!res.ok) throw new Error(`HTTP ${res.status} ${res.statusText}`);
+
+  const ct = (res.headers.get('content-type') || '').toLowerCase();
+  const looksGLB = /\.glb(?:[?#]|$)/i.test(url) || ct.includes('model/gltf-binary') || ct.includes('application/octet-stream');
+
+  const loader = new GLTFLoader();
+  loader.setCrossOrigin('anonymous');
+  const draco = new DRACOLoader();
+  draco.setDecoderPath('https://www.gstatic.com/draco/v1/decoders/');
+  loader.setDRACOLoader(draco);
+
+  if (looksGLB) {
+    const buf = await res.arrayBuffer();
+    return new Promise((resolve, reject)=>
+      loader.parse(buf, '', gltf=>resolve(gltf), err=>reject(err))
+    );
+  } else {
+    const text = await res.text();
+    let json;
+    try { json = JSON.parse(text); }
+    catch (e) { showErr('GLTF-JSON konnte nicht geparst werden.'); throw e; }
+    const base = url.replace(/[^\/?#]*([?#].*)?$/, '');
+    return new Promise((resolve, reject)=>
+      loader.parse(json, base, gltf=>resolve(gltf), err=>reject(err))
+    );
+  }
+}
+
+/* ---------- Tap: platzieren & laden ---------- */
+async function onSelect() {
+  if (!reticle.visible) return;
+
+  if (!model) {
     try {
-      // 1) Wenn GLB ermittelt → direkt setzen (mit .glb-Hint)
-      if (SCENE_GLB) mv.src = SCENE_GLB + '#.glb';
+      const gltf = await loadGLTFFlexible(cfg.modelUrl);
+      model = gltf.scene;
+      const [sx,sy,sz] = cfg.scale;    model.scale.set(sx,sy,sz);
+      const [rx,ry,rz] = cfg.rotation; model.rotation.set(deg2rad(rx), deg2rad(ry), deg2rad(rz));
+      model.position.setFromMatrixPosition(reticle.matrix);
+      scene.add(model);
 
-      // 2) Optional JSON laden
-      if (SCENE_JSON) {
-        const r = await fetch(SCENE_JSON, { cache: 'no-cache' });
-        if (!r.ok) throw new Error(r.status + ' ' + r.statusText);
-        const j = await r.json();
-
-        if (j.model)  Object.assign(cfg.model,  j.model);
-        if (j.target) Object.assign(cfg.target, j.target);
-        if (j.audio)  Object.assign(cfg.audio,  j.audio);
-
-        // UI-Felder flexibel lesen (legacy + neu)
-        if (j.ui){
-          // legacy flags
-          if ('showPlayPause' in j.ui) cfg.ui.showPlayPause = !!j.ui.showPlayPause;
-          if ('showMute'      in j.ui) cfg.ui.showMute      = !!j.ui.showMute;
-          if ('showAR'        in j.ui) cfg.ui.showAR        = !!j.ui.showAR;
-          if (j.ui.arLabel)           cfg.ui.arLabel       = String(j.ui.arLabel);
-          // optional: nested controls
-          if (j.ui.controls){
-            if ('showPlay' in j.ui.controls) cfg.ui.showPlayPause = !!j.ui.controls.showPlay;
-            if ('showMute' in j.ui.controls) cfg.ui.showMute      = !!j.ui.controls.showMute;
-          }
-        }
-
-        if (!SCENE_GLB && cfg.model.url) mv.src = cfg.model.url + '#.glb';
+      clips = gltf.animations || [];
+      if (clips.length) {
+        mixer = new THREE.AnimationMixer(model);
+        playClips();
       }
-
-      // 3) USDZ/Poster
-      const usdz = overrideUsdz || cfg.model.usdzUrl;
-      if (usdz) mv.setAttribute('ios-src', usdz); else mv.removeAttribute('ios-src');
-      if (cfg.target?.previewUrl) mv.setAttribute('poster', cfg.target.previewUrl);
-
-      // 4) AR-Button Sichtbarkeit/Label
-      if (!cfg.ui.showAR) {
-        mv.removeAttribute('ar');
-        arBtn.style.display = 'none';
-      } else {
-        arBtn.textContent = cfg.ui.arLabel || 'In AR öffnen';
-      }
-
-      // 5) Audio einrichten (optional)
-      if (cfg.audio?.src) setupAudio();
-
-      // 6) HUD-Buttons sichtbar je nach Flags
-      const showPlay = !!cfg.ui.showPlayPause;
-      const showMute = !!cfg.ui.showMute && !!cfg.audio?.src;
-      btnPlay.style.display = showPlay ? '' : 'none';
-      btnMute.style.display = showMute ? '' : 'none';
-      hud.classList.toggle('hidden', !(showPlay || showMute));
-
-    } catch (e) {
-      showErr('scene.json konnte nicht geladen werden: ' + e.message);
-      console.error(e);
+    } catch (err) {
+      console.error('GLTF load failed', err);
+      showErr('Fehler beim Laden des Objekts:\n' + (err?.message || err || 'Unbekannt'));
     }
-  })();
+  } else {
+    model.position.setFromMatrixPosition(reticle.matrix);
+  }
+}
 
-  // Wenn Model geladen ist, Animationen zuweisen & Play/Mute koppeln
-  mv.addEventListener('load', ()=>{
-    // Kamera-Defaults
-    mv.cameraOrbit = '0deg 70deg auto';
-    mv.cameraTarget = 'auto';
-    mv.fieldOfView  = '30deg';
-    mv.jumpCameraToGoal();
+// ---------- WebXR ----------
+async function startAR(){
+  if (!navigator.xr) { showErr('WebXR nicht verfügbar.'); return; }
+  const isARSupported = await navigator.xr.isSessionSupported('immersive-ar');
+  if (!isARSupported) { showErr('Dein Gerät/Browser unterstützt kein WebXR-AR.'); return; }
+  const session = await navigator.xr.requestSession('immersive-ar', { requiredFeatures: ['hit-test','local-floor'] });
+  renderer.xr.setReferenceSpaceType('local-floor');
+  await renderer.xr.setSession(session);
+  document.getElementById('enter').style.display='none';
+  animate();
+}
 
-    const names = mv.availableAnimations || [];
-    const sel = cfg.model.animation;
+function animate() { renderer.setAnimationLoop(render); }
 
-    // Animation auswählen
-    if (sel === 'none'){ mv.autoplay=false; mv.animationName=null; return; }
-    if (sel === '*' || sel==null){
-      if (names.length){ mv.animationName = names[0]; mv.autoplay=true; }
-    } else if (typeof sel === 'string'){
-      mv.animationName = names.includes(sel) ? sel : (names[0] || null);
-      mv.autoplay = !!mv.animationName;
-    } else {
-      const idx = Math.max(0, Math.min(names.length-1, parseInt(sel||0,10)));
-      mv.animationName = names[idx] || null;
-      mv.autoplay = !!mv.animationName;
-    }
+function render(t, frame) {
+  const dt = clock.getDelta(); if (mixer) mixer.update(dt);
+  if (!frame){ renderer.render(scene, camera); return; }
+  const referenceSpace = renderer.xr.getReferenceSpace();
+  const session = renderer.xr.getSession();
 
-    // Audio-Autoplay
-    if (audio && cfg.audio.autoplay === 'auto'){
-      // User-Gesture evtl. nötig
-      const kick = ()=>{ try{ audio.play(); }catch{} window.removeEventListener('pointerdown', kick); };
-      window.addEventListener('pointerdown', kick, { once:true });
-    }
-
-    // Events koppeln: Animation ↔ Audio (withAnimation)
-    mv.addEventListener('play', ()=>{
-      if (audio && cfg.audio.autoplay === 'withAnimation' && !audio.muted){
-        try{ audio.play(); }catch{}
-      }
-      btnPlay.textContent = '⏸';
+  if (!hitTestSourceRequested) {
+    session.requestReferenceSpace('viewer').then((viewerSpace) => {
+      session.requestHitTestSource({ space: viewerSpace }).then((source) => { hitTestSource = source; });
     });
-    mv.addEventListener('pause', ()=>{
-      if (audio && cfg.audio.autoplay === 'withAnimation' && !audio.paused){
-        try{ audio.pause(); }catch{}
-      }
-      btnPlay.textContent = '▶︎';
-    });
-  });
+    session.addEventListener('end', () => { hitTestSourceRequested = false; hitTestSource = null; });
+    hitTestSourceRequested = true;
+  }
 
-  // HUD-Interaktion
-  btnPlay.addEventListener('click', ()=>{
-    if (mv.paused) mv.play(); else mv.pause();
-  });
-  btnMute.addEventListener('click', ()=>{
-    setMuted(!muted);
-  });
+  if (hitTestSource) {
+    const results = frame.getHitTestResults(hitTestSource);
+    if (results.length) {
+      const hit = results[0];
+      const pose = hit.getPose(referenceSpace);
+      reticle.visible = true;
+      reticle.matrix.fromArray(pose.transform.matrix);
+    } else { reticle.visible = false; }
+  }
+
+  renderer.render(scene, camera);
+}
+
+// ---------- Boot ----------
+(async ()=>{
+  try{ await loadScene(); }catch(e){ console.warn(e); }
+  applyQueryFallback();
+  init();
+})();
 </script>
 </body>
 </html>
