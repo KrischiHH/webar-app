@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
-  <title>ARea – AR Viewer</title>
+  <title>ARea – AR Viewer1</title>
   <meta name="theme-color" content="#0b1323" />
   <style>
     :root{ --bg:#0b1323; --panel:#0f1626; --text:#e9eefb; --muted:#a7b4d6; --border:#1f2940; --accent:#7aa2ff; --accent2:#5eead4; --danger:#ef4444; }
@@ -11,7 +11,6 @@
     html,body{ margin:0; height:100%; background:#000; color:var(--text); font:14px/1.45 system-ui,Segoe UI,Inter,Roboto,Arial,sans-serif }
     canvas{ display:block }
 
-    /* Gate-Button liefert die nötige User Activation für WebXR */
     #gate{ position:fixed; inset:0; display:grid; place-items:center; z-index:20; background:transparent }
     #gate .start{
       padding:12px 16px; border-radius:12px; font-weight:900; cursor:pointer;
@@ -61,6 +60,9 @@
     import * as THREE from 'three';
     import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
     import { DRACOLoader } from 'three/addons/loaders/DRACOLoader.js';
+
+    // Version-Log für Diagnose
+    console.info('[area-viewer] v2025-10-30-guard2');
 
     // ---------- Utils ----------
     const $ = s => document.querySelector(s);
@@ -141,7 +143,7 @@
 
     // XR session state + guards
     let xrSession=null, refSpace=null, viewerSpace=null, hitTestSource=null, transientSource=null;
-    let startingXR=false; // debounce/guard
+    let startingXR=false;
 
     // Gesten
     let userYaw=0, baseYaw=0, baseScale=1;
@@ -285,20 +287,23 @@
     }
 
     // ---------- XR helpers ----------
+    async function tryRefSpace(sess, type){
+      try { const s = await sess.requestReferenceSpace(type); if (s) return s; }
+      catch(e){ console.warn('requestReferenceSpace failed:', type, e?.message||e); }
+      return null;
+    }
     async function getSupportedRefSpace(sess){
-      const types = ['local', 'local-floor', 'viewer'];
-      for (const t of types){
-        try { const s = await sess.requestReferenceSpace(t); if (s) return s; } catch {}
-      }
-      throw new Error('Keine unterstützte Reference Space (local/local-floor/viewer)');
+      return await tryRefSpace(sess,'local')
+          || await tryRefSpace(sess,'local-floor')
+          || await tryRefSpace(sess,'viewer');
     }
 
+    // ---------- XR ----------
     async function startXR(){
-      if (!navigator.xr) throw new Error('WebXR wird nicht unterstützt');
-      const supported = await navigator.xr.isSessionSupported('immersive-ar');
-      if (!supported) throw new Error('AR-Session wird auf diesem Gerät/Browser nicht unterstützt');
+      if (!navigator.xr){ throw new Error('WebXR wird nicht unterstützt'); }
+      const supported = await navigator.xr.isSessionSupported('immersive-ar').catch(()=>false);
+      if (!supported){ throw new Error('AR-Session wird auf diesem Gerät/Browser nicht unterstützt'); }
 
-      // Guard gegen mehrfaches Starten oder parallele Sessions
       if (startingXR) return;
       startingXR = true;
       try{
@@ -312,22 +317,24 @@
 
         renderer.xr.enabled = true;
         await renderer.xr.setSession(xrSession);
-        refSpace = await getSupportedRefSpace(xrSession);
 
-        // viewerSpace für Hit-Test-Quelle (kann auf manchen Geräten fehlschlagen)
-        try{
-          viewerSpace = await xrSession.requestReferenceSpace('viewer');
-        }catch{
-          viewerSpace = null;
-          console.warn('viewer reference space nicht verfügbar – zentrale Vorschau deaktiviert, nur Finger-Hit-Tests');
+        refSpace = await getSupportedRefSpace(xrSession);
+        if (!refSpace){
+          setStatus('AR-Referenzraum nicht verfügbar (local/local-floor/viewer). Bitte ARCore/Chrome prüfen.');
+          // Session sauber beenden, damit erneuter Start möglich ist
+          try{ await xrSession.end(); }catch{}
+          xrSession = null;
+          return;
         }
 
+        // viewerSpace optional
+        viewerSpace = await tryRefSpace(xrSession,'viewer'); // kann null sein
         hitTestSource = null;
         if (viewerSpace){
           try{
             hitTestSource = await xrSession.requestHitTestSource({ space: viewerSpace });
           }catch(e){
-            console.warn('HitTestSource (viewer) fehlgeschlagen:', e);
+            console.warn('HitTestSource(viewer) fehlgeschlagen:', e?.message||e);
           }
         }
 
@@ -336,19 +343,18 @@
           try{
             transientSource = await xrSession.requestHitTestSourceForTransientInput({ profile:'generic-touchscreen' });
           }catch(e){
-            console.warn('Transient HitTestSource nicht verfügbar:', e);
+            console.warn('Transient HitTestSource nicht verfügbar:', e?.message||e);
           }
         }
 
         xrSession.addEventListener('end', ()=>{
-          xrSession = null; // wichtig: freigeben
+          xrSession = null;
           setStatus('Session beendet');
           $('#hud').hidden = true;
           placed = false; startedClip = false; lastDragPos = null;
           stopAndResetAnimation();
           if (footprint){ footprint.visible = true; footprint.material.opacity = 0.18; }
           if (footOutline){ footOutline.visible = true; footOutline.material.opacity = 0.7; }
-          // Gate wieder einblenden
           $('#gate').hidden = false;
           $('#btn-start').disabled = false;
         });
@@ -487,7 +493,11 @@
         $('#btn-start').disabled = true;   // liefert User Activation + Debounce
         $('#gate').hidden = true;
         await startXR();
-        $('#hud').hidden = false;
+        if (xrSession) $('#hud').hidden = false;
+        else { // StartXR hat früh abgebrochen (kein RefSpace etc.)
+          $('#gate').hidden = false;
+          $('#btn-start').disabled = false;
+        }
       }catch(e){
         console.error(e);
         setStatus('Fehler beim Start: ' + (e?.message||e));
