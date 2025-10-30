@@ -6,8 +6,9 @@
 <title>Surface AR – WebXR Hit-Test (mit Animation)</title>
 <style>
   html,body{margin:0;height:100%;overflow:hidden;background:#000;color:#fff;font-family:system-ui}
-  #enter{position:fixed;left:50%;top:50%;transform:translate(-50%,-50%);padding:12px 18px;border-radius:12px;border:1px solid #555;background:#111;color:#fff}
-  #msg{position:fixed;left:12px;bottom:12px;opacity:.9}
+  #enter{position:fixed;left:50%;top:50%;transform:translate(-50%,-50%);padding:12px 18px;border-radius:12px;border:1px solid #555;background:#111;color:#fff;cursor:pointer;font-size:16px;font-weight:600}
+  #enter:hover{background:#222;border-color:#777}
+  #msg{position:fixed;left:12px;bottom:12px;opacity:.9;font-size:14px}
   #err{position:fixed;left:12px;top:12px;z-index:9;background:#b00020;color:#fff;padding:8px 10px;border-radius:8px;display:none;font:12px/1.35 monospace;max-width:min(92vw,680px);white-space:pre-wrap}
   #badge{position:fixed;right:12px;top:12px;z-index:9;background:#0b1220;color:#9cf;padding:6px 8px;border-radius:8px;font:12px system-ui}
 </style>
@@ -22,7 +23,7 @@
 </head>
 <body>
   <div id="err"></div>
-  <button id="enter">Start AR</button>
+  <button id="enter">AR starten</button>
   <div id="msg">Android Chrome empfohlen · Tippe auf den Boden, um das Modell zu platzieren</div>
   <div id="badge">WEBXR BUILD</div>
 
@@ -33,6 +34,7 @@ import { DRACOLoader } from 'three/addons/loaders/DRACOLoader.js';
 
 let camera, scene, renderer, reticle, controller, hitTestSource=null, hitTestSourceRequested=false;
 let model=null, mixer=null, clips=[];
+let transientHitTestSource = null;
 const clock = new THREE.Clock();
 
 const showErr = (m)=>{ const el=document.getElementById('err'); el.textContent=m; el.style.display='block'; };
@@ -241,9 +243,54 @@ async function startAR(){
   if (!navigator.xr) { showErr('WebXR nicht verfügbar.'); return; }
   const isARSupported = await navigator.xr.isSessionSupported('immersive-ar');
   if (!isARSupported) { showErr('Dein Gerät/Browser unterstützt kein WebXR-AR.'); return; }
-  const session = await navigator.xr.requestSession('immersive-ar', { requiredFeatures: ['hit-test','local-floor'] });
-  renderer.xr.setReferenceSpaceType('local-floor');
+  
+  let session = null;
+  // Try with dom-overlay first, then fallback without it
+  try {
+    session = await navigator.xr.requestSession('immersive-ar', { 
+      requiredFeatures: ['hit-test'],
+      optionalFeatures: ['dom-overlay', 'local-floor', 'local'],
+      domOverlay: { root: document.body }
+    });
+  } catch(e1) {
+    console.warn('requestSession with dom-overlay failed, retrying without:', e1);
+    try {
+      session = await navigator.xr.requestSession('immersive-ar', { 
+        requiredFeatures: ['hit-test'],
+        optionalFeatures: ['local-floor', 'local']
+      });
+    } catch(e2) {
+      showErr('AR-Session konnte nicht gestartet werden:\n' + (e2?.message || e2));
+      return;
+    }
+  }
+  
+  renderer.xr.enabled = true;
   await renderer.xr.setSession(session);
+  
+  // Try reference spaces in order: local → local-floor → viewer
+  let refSpace = null;
+  try {
+    refSpace = await session.requestReferenceSpace('local');
+    renderer.xr.setReferenceSpaceType('local');
+  } catch(e1) {
+    console.warn('local reference space not supported, trying local-floor:', e1);
+    try {
+      refSpace = await session.requestReferenceSpace('local-floor');
+      renderer.xr.setReferenceSpaceType('local-floor');
+    } catch(e2) {
+      console.warn('local-floor reference space not supported, trying viewer:', e2);
+      try {
+        refSpace = await session.requestReferenceSpace('viewer');
+        renderer.xr.setReferenceSpaceType('viewer');
+      } catch(e3) {
+        showErr('Keine unterstützte Reference Space gefunden:\n' + (e3?.message || e3));
+        session.end();
+        return;
+      }
+    }
+  }
+  
   document.getElementById('enter').style.display='none';
   animate();
 }
@@ -256,22 +303,77 @@ function render(t, frame) {
   const referenceSpace = renderer.xr.getReferenceSpace();
   const session = renderer.xr.getSession();
 
+  // Request hit test sources on first frame
   if (!hitTestSourceRequested) {
+    // Try to set up transient hit test for direct finger placement
     session.requestReferenceSpace('viewer').then((viewerSpace) => {
-      session.requestHitTestSource({ space: viewerSpace }).then((source) => { hitTestSource = source; });
+      // Transient input source for direct finger placement
+      session.requestHitTestSourceForTransientInput({ profile: 'generic-touchscreen' })
+        .then((source) => { 
+          transientHitTestSource = source; 
+          console.log('Transient hit test source ready for touch input');
+        })
+        .catch(err => {
+          console.warn('Transient hit test not available:', err);
+        });
+      
+      // Fallback: central reticle hit test
+      session.requestHitTestSource({ space: viewerSpace })
+        .then((source) => { 
+          hitTestSource = source; 
+          console.log('Central hit test source ready');
+        })
+        .catch(err => {
+          console.error('Hit test source failed:', err);
+          showErr('Hit-Test wird nicht unterstützt:\n' + (err?.message || err));
+        });
+    }).catch(err => {
+      console.error('viewer reference space failed:', err);
     });
-    session.addEventListener('end', () => { hitTestSourceRequested = false; hitTestSource = null; });
+    
+    session.addEventListener('end', () => { 
+      hitTestSourceRequested = false; 
+      hitTestSource = null;
+      transientHitTestSource = null;
+    });
     hitTestSourceRequested = true;
   }
 
-  if (hitTestSource) {
+  // Check transient hit test results first (direct finger placement)
+  let hitDetected = false;
+  if (transientHitTestSource) {
+    const transientResults = frame.getHitTestResultsForTransientInput(transientHitTestSource);
+    if (transientResults.length > 0) {
+      const inputSource = transientResults[0];
+      if (inputSource.results.length > 0) {
+        const hit = inputSource.results[0];
+        const pose = hit.getPose(referenceSpace);
+        if (pose) {
+          reticle.visible = true;
+          reticle.matrix.fromArray(pose.transform.matrix);
+          hitDetected = true;
+        }
+      }
+    }
+  }
+
+  // Fallback to central reticle if no transient hit detected
+  if (!hitDetected && hitTestSource) {
     const results = frame.getHitTestResults(hitTestSource);
     if (results.length) {
       const hit = results[0];
       const pose = hit.getPose(referenceSpace);
-      reticle.visible = true;
-      reticle.matrix.fromArray(pose.transform.matrix);
-    } else { reticle.visible = false; }
+      if (pose) {
+        reticle.visible = true;
+        reticle.matrix.fromArray(pose.transform.matrix);
+        hitDetected = true;
+      }
+    }
+  }
+
+  // Hide reticle if no hits
+  if (!hitDetected) {
+    reticle.visible = false;
   }
 
   renderer.render(scene, camera);
