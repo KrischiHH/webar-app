@@ -269,19 +269,18 @@ async function startAR(){
   await renderer.xr.setSession(session);
   
   // Try reference spaces in order: local → local-floor → viewer
-  let refSpace = null;
   try {
-    refSpace = await session.requestReferenceSpace('local');
+    await session.requestReferenceSpace('local');
     renderer.xr.setReferenceSpaceType('local');
   } catch(e1) {
     console.warn('local reference space not supported, trying local-floor:', e1);
     try {
-      refSpace = await session.requestReferenceSpace('local-floor');
+      await session.requestReferenceSpace('local-floor');
       renderer.xr.setReferenceSpaceType('local-floor');
     } catch(e2) {
       console.warn('local-floor reference space not supported, trying viewer:', e2);
       try {
-        refSpace = await session.requestReferenceSpace('viewer');
+        await session.requestReferenceSpace('viewer');
         renderer.xr.setReferenceSpaceType('viewer');
       } catch(e3) {
         showErr('Keine unterstützte Reference Space gefunden:\n' + (e3?.message || e3));
