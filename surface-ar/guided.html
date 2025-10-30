@@ -58,7 +58,6 @@
     #diag .row{display:flex; gap:8px; justify-content:flex-end; margin-top:10px}
     #diag button{padding:8px 12px; border-radius:10px; border:1px solid var(--border); background:var(--panel); color:var(--text); cursor:pointer}
 
-    /* Hide if not needed */
     [hidden]{display:none !important}
   </style>
 
@@ -72,9 +71,7 @@
   </script>
 </head>
 <body>
-  <!-- WebGL canvas is created by THREE -->
   <div id="overlayRoot">
-    <!-- Preflight / Poster -->
     <div id="preflight">
       <div id="preflightCard">
         <img id="poster" class="poster" alt="Poster" />
@@ -90,7 +87,6 @@
       </div>
     </div>
 
-    <!-- HUD -->
     <div id="hud" hidden>
       <div class="bar">
         <button id="btn-place" class="iconbtn" title="Platzieren"><span class="ico" style="--m:url('data:image/svg+xml,%3Csvg viewBox=\'0 0 24 24\' xmlns=\'http://www.w3.org/2000/svg\'%3E%3Cpath d=\'M12 2l7 4v6c0 5-7 10-7 10S5 17 5 12V6l7-4z\' fill=\'%23fff\'/%3E%3C/svg%3E')"></span>Platzieren</button>
@@ -127,7 +123,6 @@
     import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
     import { DRACOLoader } from 'three/addons/loaders/DRACOLoader.js';
 
-    // ---------- tiny utils ----------
     const $ = sel => document.querySelector(sel);
     function toast(msg){ const t=$('#toast'); t.textContent=msg; t.style.display='block'; setTimeout(()=>t.style.display='none',1800); }
     function qs(key){ return new URL(location.href).searchParams.get(key); }
@@ -139,15 +134,20 @@
       $('#diag').hidden = false;
     }
 
-    // Resolve scene config
     async function loadConfig(){
       const src = qs('src');
       if (src){
-        const text = decodeURIComponent(src.split(',')[1]||'');
-        return JSON.parse(text);
+        const afterComma = src.split(',')[1] || '';
+        if (src.startsWith('data:') && src.includes(';base64,')){
+          const text = atob(afterComma);
+          return JSON.parse(text);
+        } else {
+          const text = decodeURIComponent(afterComma);
+          return JSON.parse(text);
+        }
       }
       const id = qs('scene');
-      const base  = qs('base') || 'https://area-publish.area-webar.workers.dev';
+      const base = qs('base') || 'https://area-publish.area-webar.workers.dev';
       if (!id) throw new Error('Kein scene oder src angegeben');
       const url = `${base.replace(/\/$/,'')}/scenes/${encodeURIComponent(id)}/scene.json`;
       const res = await fetch(url, { cache:'no-store' });
@@ -164,11 +164,12 @@
       return b ? `${b}/${maybeRel.replace(/^\//,'')}` : maybeRel;
     }
 
-    // ---------- THREE setup ----------
+    // THREE setup
     const renderer = new THREE.WebGLRenderer({ antialias:true, alpha:true, preserveDrawingBuffer:false, powerPreference:'high-performance' });
     renderer.setPixelRatio(Math.min(devicePixelRatio||1, 2));
     renderer.setSize(innerWidth, innerHeight);
-    renderer.outputColorSpace = THREE.SRGBColorSpace;
+    if ('outputColorSpace' in renderer) renderer.outputColorSpace = THREE.SRGBColorSpace;
+    else renderer.outputEncoding = THREE.sRGBEncoding;
     renderer.toneMapping = THREE.ACESFilmicToneMapping;
     renderer.toneMappingExposure = 1.1;
     document.body.prepend(renderer.domElement);
@@ -178,7 +179,7 @@
     const light = new THREE.HemisphereLight(0xffffff, 0x334466, 1.2); threeScene.add(light);
     const dir   = new THREE.DirectionalLight(0xffffff, 1.8); dir.position.set(0,3,1); threeScene.add(dir);
 
-    window.addEventListener('resize', ()=>{
+    addEventListener('resize', ()=>{
       renderer.setSize(innerWidth, innerHeight);
       camera.aspect = innerWidth/innerHeight; camera.updateProjectionMatrix();
     });
@@ -194,20 +195,18 @@
 
     // Model state
     let model = null, previewModel = null, mixer = null, audio = null;
-    let placed = false, baseScale = 1;
+    let placed = false, baseScale = 1, audioMuted = false;
 
     const loader = new GLTFLoader();
     const draco = new DRACOLoader(); draco.setDecoderPath('https://www.gstatic.com/draco/v1/decoders/');
     loader.setDRACOLoader(draco);
 
-    // Animation helpers
     function startAnimation(cfg){
       if (!mixer || !model) return;
       const clips = model.animations || [];
       if (!clips.length) return;
-      let clip = null;
       const want = (cfg.animation?.clipName)||'*';
-      clip = (want && want !== '*') ? (clips.find(c=>c.name===want) || clips[0]) : clips[0];
+      const clip = (want && want !== '*') ? (clips.find(c=>c.name===want) || clips[0]) : clips[0];
       const act = mixer.clipAction(clip);
       const loop = cfg.animation?.loop !== false;
       act.setLoop(loop ? THREE.LoopRepeat : THREE.LoopOnce, loop ? (cfg.animation?.iterations||9999) : 0);
@@ -215,26 +214,36 @@
       act.reset().play();
       if (cfg.audio?.autoplay === 'withAnimation' && audio && audio.buffer && !audio.isPlaying) audio.play();
     }
-    function stopAnimation(){ if (mixer){ mixer.stopAllAction(); } }
 
     // AR session / hit-test
     let xrSession = null, refSpace = null, viewerSpace = null, hitTestSource = null;
+
+    async function requestArSession(overlayRoot){
+      const init = { requiredFeatures:['hit-test'], optionalFeatures:['dom-overlay'], domOverlay:{ root: overlayRoot } };
+      try{
+        return await navigator.xr.requestSession('immersive-ar', init);
+      }catch(e1){
+        // Fallback ohne DOM Overlay
+        const init2 = { requiredFeatures:['hit-test'] };
+        return await navigator.xr.requestSession('immersive-ar', init2);
+      }
+    }
 
     async function startXR(cfg){
       if (!navigator.xr) throw new Error('WebXR wird nicht unterstützt (Browser/Gerät).');
       const supported = await navigator.xr.isSessionSupported('immersive-ar');
       if (!supported) throw new Error('AR-Session wird auf diesem Gerät/Browser nicht unterstützt.');
+
       const overlayRoot = document.getElementById('overlayRoot');
-      const sessionInit = { requiredFeatures:['hit-test'], optionalFeatures:['dom-overlay'], domOverlay:{ root: overlayRoot } };
-      const sess = await navigator.xr.requestSession('immersive-ar', sessionInit);
+      const sess = await requestArSession(overlayRoot);
       xrSession = sess;
+
       renderer.xr.enabled = true;
       await renderer.xr.setSession(sess);
       refSpace = await sess.requestReferenceSpace('local');
       viewerSpace = await sess.requestReferenceSpace('viewer');
       hitTestSource = await sess.requestHitTestSource({ space: viewerSpace });
 
-      // Input: tap to place
       sess.addEventListener('select', ()=>{
         if (!reticle.visible || !previewModel) return;
         const m = new THREE.Matrix4(); m.copy(reticle.matrix);
@@ -244,20 +253,21 @@
         $('#status').textContent = 'Platziert – nutze die HUD-Buttons';
       });
 
-      // Render loop
       renderer.setAnimationLoop((time, frame)=>{
         if (!frame) return;
         const ht = frame.getHitTestResults(hitTestSource);
         if (ht.length > 0){
-          const hit = ht[0];
-          const m = new THREE.Matrix4().fromArray(hit.getPose(refSpace).transform.matrix);
-          reticle.visible = true; reticle.matrix.copy(m);
-          if (!placed && previewModel){
-            previewModel.visible = true;
-            previewModel.matrix.copy(m);
-            previewModel.matrix.decompose(previewModel.position, previewModel.quaternion, previewModel.scale);
-            $('#status').textContent = 'Fläche erkannt – tippe zum Platzieren';
-            hidePreflight(); // ready
+          const pose = ht[0].getPose(refSpace);
+          if (pose && pose.transform){
+            const m = new THREE.Matrix4().fromArray(pose.transform.matrix);
+            reticle.visible = true; reticle.matrix.copy(m);
+            if (!placed && previewModel){
+              previewModel.visible = true;
+              previewModel.matrix.copy(m);
+              previewModel.matrix.decompose(previewModel.position, previewModel.quaternion, previewModel.scale);
+              $('#status').textContent = 'Fläche erkannt – tippe zum Platzieren';
+              hidePreflight();
+            }
           }
         } else {
           reticle.visible = false;
@@ -280,7 +290,6 @@
       document.getElementById('hud').hidden = false;
     }
 
-    // Load model and optional audio
     async function loadModel(cfg){
       const glbUrl = resolveUrl(cfg.model?.url||'scene.glb', cfg);
       const gltf = await loader.loadAsync(glbUrl);
@@ -289,12 +298,11 @@
       root.updateMatrixWorld(true);
       baseScale = cfg.model?.scale || 1;
 
-      // Real model
       model = new THREE.Group(); model.name = 'ModelRoot'; model.add(root);
       model.traverse(n=>{ if (n.material){ n.material.transparent = (n.material.transparent||false); } });
-      model.visible = true; threeScene.add(model);
+      threeScene.add(model);
 
-      // Ghost preview (vor Platzierung sichtbar)
+      // Preview
       previewModel = model.clone(true);
       previewModel.traverse(n=>{
         if (n.material){ const m = n.material.clone(); m.transparent = true; m.opacity = 0.6; m.depthWrite = false; n.material = m; }
@@ -304,7 +312,7 @@
       model.scale.setScalar(baseScale);
       previewModel.scale.setScalar(baseScale);
 
-      // Animations
+      // Animationen
       if (gltf.animations?.length){
         model.animations = gltf.animations;
         mixer = new THREE.AnimationMixer(root);
@@ -314,7 +322,7 @@
         $('#btn-play').hidden = true;
       }
 
-      // Optional audio (nicht im nativen Viewer)
+      // Audio (nur WebXR)
       if (cfg.audio?.url){
         const listener = new THREE.AudioListener(); camera.add(listener);
         const sound = new THREE.Audio(listener);
@@ -330,7 +338,6 @@
       return model;
     }
 
-    // Controls
     function setScale(f){ if (!model) return; const s = THREE.MathUtils.clamp(model.scale.x * f, 0.05, 20); model.scale.setScalar(s); previewModel?.scale.setScalar(s); }
     function rotateY(deg){ if (!model) return; const r = THREE.MathUtils.degToRad(deg); model.rotation.y += r; previewModel && (previewModel.rotation.y += r); }
 
@@ -340,79 +347,71 @@
     $('#btn-rot-l').onclick = ()=> rotateY(-15);
     $('#btn-rot-r').onclick = ()=> rotateY(+15);
     $('#btn-reset').onclick = ()=>{ placed=false; previewModel.visible=true; $('#btn-place').textContent='Platzieren'; };
-    $('#btn-place').onclick = ()=>{ toast(!placed ? 'Tippe ins AR-Bild, um zu platzieren' : 'Neu platzieren aktiviert'); if(placed){ placed=false; previewModel.visible=true; $('#btn-place').textContent='Platzieren'; } };
+    $('#btn-place').onclick = ()=>{
+      toast(!placed ? 'Tippe ins AR-Bild, um zu platzieren' : 'Neu platzieren aktiviert');
+      if (placed){
+        placed = false;
+        previewModel.visible = true;
+        $('#btn-place').textContent = 'Platzieren';
+      }
+    };
     $('#btn-play').onclick = ()=>{
       if (!mixer || !model?.animations?.length) return;
       const ts = mixer.timeScale ?? 1;
       if (ts === 0){ mixer.timeScale = 1; if (audio && audio.buffer && !audio.isPlaying) audio.play(); }
-      else { mixer.timeScale = 0; if (audio?.isPlaying) audio.pause?.(); }
+      else { mixer.timeScale = 0; if (audio?.isPlaying && audio.pause) audio.pause(); }
     };
-    $('#btn-mute').onclick = ()=>{ if (audio){ audio.setVolume(audio.getVolume() > 0 ? 0 : 0.85); } };
+    $('#btn-mute').onclick = ()=>{
+      if (!audio) return;
+      audioMuted = !audioMuted;
+      audio.setVolume(audioMuted ? 0 : 0.85);
+      $('#btn-mute').classList.toggle('danger', audioMuted);
+    };
 
-    // Native fallback link
     function buildNativeLink(cfg){
       const glb = resolveUrl(cfg.model?.url||'', cfg);
       const usdz = resolveUrl(cfg.model?.usdzUrl||'', cfg);
-      const ua = navigator.userAgent || '';
-      const isiOS = /iPhone|iPad|iPod/.test(ua) || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
-      if (isiOS && usdz) return usdz; // Quick Look
+      const iOS = /iPhone|iPad|iPod/.test(navigator.userAgent) || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
+      if (iOS && usdz) return usdz;
       const file = encodeURIComponent(glb);
       const title = encodeURIComponent(cfg.meta?.title || 'ARea Model');
-      // Scene Viewer intent (Android)
       return `intent://arvr.google.com/scene-viewer/1.0?file=${file}&mode=ar_preferred&title=${title}#Intent;scheme=https;package=com.google.android.googlequicksearchbox;end;`;
     }
 
-    // Main
     (async function(){
       let cfg;
-      try{
-        cfg = await loadConfig();
-      }catch(e){
-        showDiag('Konfiguration konnte nicht geladen werden.', String(e), null);
-        throw e;
-      }
+      try{ cfg = await loadConfig(); }
+      catch(e){ showDiag('Konfiguration konnte nicht geladen werden.', String(e), null); throw e; }
 
-      // UI text & poster
       $('#eyebrow').textContent = cfg.ui?.welcome?.eyebrow || 'ARea – Szene';
       $('#title').textContent   = cfg.ui?.welcome?.title   || cfg.meta?.title || 'Scene';
       $('#desc').textContent    = cfg.ui?.welcome?.desc    || 'Erlaube Kamera & bewege das Gerät zum Erkennen der Oberfläche.';
       $('#poster').src          = resolveUrl(cfg.ui?.welcome?.poster || 'poster.jpg', cfg);
 
-      // Native CTA Sichtbarkeit
-      const isiOS = /iPhone|iPad|iPod/.test(navigator.userAgent) || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
+      const iOS = /iPhone|iPad|iPod/.test(navigator.userAgent) || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
       const nativePref = cfg.ui?.welcome?.nativeCta ?? 'ios-only'; // 'never' | 'always' | 'ios-only'
-      const shouldShowNative = nativePref === 'always' || (nativePref === 'ios-only' && isiOS && !!cfg.model?.usdzUrl);
       const nativeUrl = buildNativeLink(cfg);
       const openNative = $('#btn-open-native');
-      openNative.hidden = !shouldShowNative;
+      const showNative = (nativePref === 'always') || (nativePref === 'ios-only' && iOS && !!cfg.model?.usdzUrl);
+      openNative.hidden = !showNative;
       openNative.onclick = ()=>{ location.href = nativeUrl; };
 
-      // Assets laden
-      try{
-        await loadModel(cfg);
-      }catch(e){
-        showDiag('3D-Modell konnte nicht geladen werden.', String(e), nativeUrl);
-        throw e;
-      }
+      try{ await loadModel(cfg); }
+      catch(e){ showDiag('3D-Modell konnte nicht geladen werden.', String(e), nativeUrl); throw e; }
       $('#status').textContent = 'Bereit – tippe OK';
 
-      // Start AR
       $('#btn-start').onclick = async ()=>{
         try{
           await startXR(cfg);
-          // Preflight blendet sich aus, sobald Reticle sichtbar ist (siehe Renderloop)
         }catch(e){
-          // Browser/OS/HW oder Permission-Fehler → Diagnose + Native-Fallback
           const msg = (e?.message||String(e));
-          showDiag('AR konnte nicht gestartet werden.', msg + '\n\nTipps:\n• Öffne in Chrome (nicht In-App Browser)\n• Kamera erlauben\n• „Google Play-Dienste für AR“ installieren/aktualisieren', nativeUrl);
+          showDiag('AR konnte nicht gestartet werden.', msg + '\n\nTipps:\n• In Chrome öffnen (kein In-App Browser)\n• Kamera erlauben\n• „Google Play-Dienste für AR“ aktualisieren', nativeUrl);
           openNative.hidden = false;
         }
       };
 
-      // Falls WebXR ganz fehlt → sofort Native-Button zeigen
       if (!navigator.xr){ openNative.hidden = false; }
     })().catch(err=>{ console.error(err); toast('Fehler: '+(err?.message||err)); });
-
   </script>
 </body>
 </html>
