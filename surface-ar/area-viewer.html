@@ -342,16 +342,13 @@ function render(t, frame) {
   let hitDetected = false;
   if (transientHitTestSource) {
     const transientResults = frame.getHitTestResultsForTransientInput(transientHitTestSource);
-    if (transientResults.length > 0) {
-      const inputSource = transientResults[0];
-      if (inputSource.results.length > 0) {
-        const hit = inputSource.results[0];
-        const pose = hit.getPose(referenceSpace);
-        if (pose) {
-          reticle.visible = true;
-          reticle.matrix.fromArray(pose.transform.matrix);
-          hitDetected = true;
-        }
+    if (transientResults.length > 0 && transientResults[0].results.length > 0) {
+      const hit = transientResults[0].results[0];
+      const pose = hit.getPose(referenceSpace);
+      if (pose) {
+        reticle.visible = true;
+        reticle.matrix.fromArray(pose.transform.matrix);
+        hitDetected = true;
       }
     }
   }
