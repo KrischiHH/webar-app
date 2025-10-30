@@ -11,6 +11,16 @@
     html,body{ margin:0; height:100%; background:#000; color:var(--text); font:14px/1.45 system-ui,Segoe UI,Inter,Roboto,Arial,sans-serif }
     canvas{ display:block }
 
+    /* Minimaler Gate-Button → liefert die nötige User Activation für WebXR */
+    #gate{ position:fixed; inset:0; display:grid; place-items:center; z-index:20; }
+    #gate .start{
+      padding:12px 16px; border-radius:12px; font-weight:900; cursor:pointer;
+      background:linear-gradient(180deg,
+        color-mix(in srgb, var(--panel) 78%, var(--accent) 22%),
+        color-mix(in srgb, var(--panel) 85%, var(--accent2) 15%));
+      border:1px solid var(--border); color:var(--text); box-shadow:0 10px 24px rgba(0,0,0,.35);
+    }
+
     #hud{ position:fixed; left:0; right:0; bottom:env(safe-area-inset-bottom); padding:10px; display:flex; justify-content:center; pointer-events:auto; z-index:9 }
     #hud .bar{ display:flex; gap:8px; padding:8px; border:1px solid var(--border); border-radius:999px; background:color-mix(in srgb, var(--panel) 86%, transparent); box-shadow:0 10px 24px rgba(0,0,0,.35) }
     .iconbtn{ display:inline-flex; align-items:center; gap:8px; padding:10px 12px; border-radius:999px; border:1px solid var(--border); background:color-mix(in srgb, var(--panel) 92%, transparent); color:var(--text); cursor:pointer; font-weight:800 }
@@ -35,6 +45,8 @@
   </script>
 </head>
 <body>
+  <div id="gate"><button id="btn-start" class="start">AR starten</button></div>
+
   <div id="hud" hidden>
     <div class="bar">
       <button id="btn-replace" class="iconbtn">Neu ausrichten</button>
@@ -49,6 +61,7 @@
     import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
     import { DRACOLoader } from 'three/addons/loaders/DRACOLoader.js';
 
+    // ---------- Utils ----------
     const $ = s => document.querySelector(s);
     const setStatus = (t,pulse=false)=>{ const e=$('#status'); e.textContent=t; e.classList.toggle('pulse', !!pulse); };
     const easeOutCubic = x => (1 - Math.pow(1 - x, 3));
@@ -96,7 +109,7 @@
       const json = await res.json(); json.__base = root; return json;
     }
 
-    // THREE setup
+    // ---------- THREE setup ----------
     const renderer = new THREE.WebGLRenderer({ antialias:true, alpha:true, powerPreference:'high-performance' });
     renderer.setPixelRatio(Math.min(devicePixelRatio||1, 2));
     renderer.setSize(innerWidth, innerHeight);
@@ -115,42 +128,37 @@
       camera.aspect = innerWidth/innerHeight; camera.updateProjectionMatrix();
     });
 
-    // Loader
+    // ---------- Loaders ----------
     const gltfLoader = new GLTFLoader();
     const draco = new DRACOLoader(); draco.setDecoderPath('https://www.gstatic.com/draco/v1/decoders/');
     gltfLoader.setDRACOLoader(draco);
 
-    // State
+    // ---------- State ----------
     let cfg=null;
-    let model=null;        // THREE.Group (Root)
-    let mixer=null;        // THREE.AnimationMixer
-    let audio=null;        // THREE.Audio
-    let placed=false;
-    let startedClip=false;
+    let model=null, mixer=null, audio=null;
+    let placed=false, startedClip=false;
     let xrSession=null, refSpace=null, viewerSpace=null, hitTestSource=null, transientSource=null;
 
-    // Gesture state
-    let userYaw=0;           // zusätzliche Y-Rotation durch Gesten
-    let baseYaw=0, baseScale=1;
-    let gestureInitialDist=0;
-    let gestureInitialYaw=0;
+    // Gesten
+    let userYaw=0, baseYaw=0, baseScale=1;
+    let gestureInitialDist=0, gestureInitialYaw=0;
     const clampScale = s => clamp(s, 0.05, 10);
 
-    // Footprint (nach Model-Load)
+    // Footprint
     let footprint=null, footOutline=null;
 
-    // Drop-Animation state
+    // Drop-Animation
     let drop = { active:false, t0:0, dur:260, s0:1, s1:1, yBase:0, yLift:0.03 };
     let fpFade = { active:false, t0:0, dur:260, op0:0.18, op1:0, line0:0.7, line1:0 };
 
-    // Letzte Drag-Position für „sicheres Platzieren“
+    // Position für sicheres Platzieren
     let lastDragPos = null;
 
-    // Raycaster für Tap-auf-Objekt
+    // Ray-Pick fürs Re-Edit
     const raycaster = new THREE.Raycaster();
     const tmpMat4 = new THREE.Matrix4();
-    const tmpVec3 = new THREE.Vector3();
 
+    // ---------- Anim/Audio ----------
     function pickClip(gltf, cfg){
       const clips = gltf.animations || [];
       if (!clips.length) return null;
@@ -159,8 +167,7 @@
       if (!want || want === '*') return clips[0];
       return clips.find(c=>c.name===want) || clips[0];
     }
-
-    function startAnimationAndAudio(cfg){
+    function startAnimationAndAudio(){
       if (mixer && model && model.userData._clip){
         const clip = model.userData._clip;
         const act = mixer.clipAction(clip);
@@ -180,10 +187,10 @@
         mixer.timeScale = 0;
       }
       if (audio?.isPlaying){ (audio.pause||audio.stop).call(audio); }
-      if (audio?.buffer){ try{ audio.offset = 0; }catch{} } // reset best effort
       startedClip = false;
     }
 
+    // ---------- Model ----------
     async function loadModel(){
       const url = resolveUrl(cfg.model?.url || 'scene.glb', cfg);
       const gltf = await gltfLoader.loadAsync(url);
@@ -195,32 +202,23 @@
       model.add(root);
       scene.add(model);
 
-      // Basisskalierung
       baseScale = cfg.model?.scale || 1;
       model.scale.setScalar(baseScale);
 
-      // Footprint anhand Bounding Box
+      // Footprint
       try{
         const box = new THREE.Box3().setFromObject(root);
         const size = new THREE.Vector3(); box.getSize(size);
         const min = new THREE.Vector3(); box.getMin(min);
-
         const w = Math.max(size.x, 0.05);
         const d = Math.max(size.z, 0.05);
-        const yLift = -min.y + 0.001; // knapp über Fläche
-
+        const yLift = -min.y + 0.001;
         const planeGeom = new THREE.PlaneGeometry(w, d).rotateX(-Math.PI/2);
-        const planeMat  = new THREE.MeshBasicMaterial({ color:0x88ccff, transparent:true, opacity:0.18, depthWrite:false });
-        footprint = new THREE.Mesh(planeGeom, planeMat);
-        footprint.name = 'Footprint';
-        footprint.position.y = yLift;
-        model.add(footprint);
-
+        footprint = new THREE.Mesh(planeGeom, new THREE.MeshBasicMaterial({ color:0x88ccff, transparent:true, opacity:0.18, depthWrite:false }));
+        footprint.position.y = yLift; model.add(footprint);
         const edges = new THREE.EdgesGeometry(new THREE.PlaneGeometry(w, d).rotateX(-Math.PI/2));
-        const lineMat = new THREE.LineBasicMaterial({ color:0x88ccff, transparent:true, opacity:0.7 });
-        footOutline = new THREE.LineSegments(edges, lineMat);
-        footOutline.position.y = yLift + 0.001;
-        model.add(footOutline);
+        footOutline = new THREE.LineSegments(edges, new THREE.LineBasicMaterial({ color:0x88ccff, transparent:true, opacity:0.7 }));
+        footOutline.position.y = yLift + 0.001; model.add(footOutline);
       }catch{}
 
       // Animation
@@ -229,8 +227,8 @@
         model.userData._clip = pickClip(gltf, cfg);
         console.log('Animations:', gltf.animations.map(a=>({name:a.name,duration:a.duration})));
       } else {
-        mixer = null;
-        model.userData._clip = null;
+        mixer = null; model.userData._clip = null;
+        console.warn('Keine Animationen im GLB gefunden.');
       }
 
       // Audio
@@ -248,9 +246,7 @@
         $('#btn-mute').hidden = true;
       }
 
-      // Vorschau sichtbar, aber (noch) nicht platziert
-      placed = false;
-      startedClip = false;
+      placed = false; startedClip = false;
       if (footprint){ footprint.visible = true; footprint.material.opacity = 0.18; }
       if (footOutline){ footOutline.visible = true; footOutline.material.opacity = 0.7; }
     }
@@ -265,27 +261,26 @@
     }
 
     function tryEnterEditModeViaPick(frame, inputSource){
-      if (!placed || !model) return false;
-      if (!inputSource?.targetRaySpace) return false;
+      if (!placed || !model || !inputSource?.targetRaySpace) return false;
       const pose = frame.getPose(inputSource.targetRaySpace, refSpace);
       if (!pose) return false;
       const m = tmpMat4.fromArray(pose.transform.matrix);
       const o = new THREE.Vector3().setFromMatrixPosition(m);
       const dir = new THREE.Vector3(0,0,-1).applyMatrix4(m).sub(o).normalize();
-      raycaster.set(o, dir);
+      const raycaster = new THREE.Raycaster(o, dir);
       const hits = raycaster.intersectObject(model, true);
       if (hits.length){
-        // Wechsel in Edit/Vorschau
         placed = false;
         stopAndResetAnimation();
         if (footprint){ footprint.visible = true; footprint.material.opacity = 0.18; }
         if (footOutline){ footOutline.visible = true; footOutline.material.opacity = 0.7; }
-        setStatus('Bearbeiten: Ziehen/Pinch/Rotate, Tippen zum Platzieren');
+        setStatus('Bearbeiten: Ziehen · Pinch/Rotate · Tippen platziert');
         return true;
       }
       return false;
     }
 
+    // ---------- XR ----------
     async function startXR(){
       if (!navigator.xr) throw new Error('WebXR wird nicht unterstützt');
       const supported = await navigator.xr.isSessionSupported('immersive-ar');
@@ -306,17 +301,14 @@
       xrSession.addEventListener('end', ()=>{
         setStatus('Session beendet');
         $('#hud').hidden = true;
-        placed = false;
-        startedClip = false;
-        lastDragPos = null;
+        placed = false; startedClip = false; lastDragPos = null;
         stopAndResetAnimation();
         if (footprint){ footprint.visible = true; footprint.material.opacity = 0.18; }
         if (footOutline){ footOutline.visible = true; footOutline.material.opacity = 0.7; }
+        // Gate wieder einblenden, damit erneuter Start möglich ist
+        $('#gate').hidden = false;
       });
 
-      // Tap-Logik:
-      // - Wenn platziert und Tap trifft Objekt → Edit-Modus
-      // - Wenn nicht platziert → platzieren an aktueller Vorschau-Position
       xrSession.addEventListener('select', (ev)=>{
         const frame = ev.frame;
         const src = ev.inputSource;
@@ -331,16 +323,12 @@
           placed = true;
           setStatus('Platziert – Animation/Audio laufen');
 
-          // Drop-Animation
-          drop.active = true;
-          drop.t0 = performance.now();
-          drop.s1 = model.scale.x;
-          drop.s0 = drop.s1 * 0.85;
+          drop.active = true; drop.t0 = performance.now();
+          drop.s1 = model.scale.x; drop.s0 = drop.s1 * 0.85;
           drop.yBase = model.position.y;
           model.scale.setScalar(drop.s0);
           model.position.y = drop.yBase + drop.yLift;
 
-          // Footprint ausfaden
           if (footprint){
             fpFade.active = true; fpFade.t0 = drop.t0;
             fpFade.op0 = footprint.material.opacity; fpFade.op1 = 0;
@@ -349,26 +337,18 @@
             fpFade.line0 = footOutline.material.opacity; fpFade.line1 = 0;
           }
 
-          // Autostart Animation/Audio
-          startAnimationAndAudio(cfg);
-          startedClip = true;
+          startAnimationAndAudio(); startedClip = true;
           $('#hud').hidden = false;
         }
       });
 
-      // Renderloop:
-      // - Wenn NICHT platziert:
-      //   - Ohne Touch → Vorschau folgt dem zentralen Hit-Test (wie Native)
-      //   - 1 Finger → Drag
-      //   - 2 Finger → Pinch/Rotate + Position = Mittelpunkt
       renderer.setAnimationLoop((t, frame)=>{
         if (!frame) return;
         const dt = renderer.xr.getClock().getDelta();
 
         if (!placed && model){
-          let handledByTouch = false;
+          let handled = false;
 
-          // Transient Finger-Hits
           if (transientSource){
             const tr = frame.getHitTestResultsForTransientInput(transientSource);
             const touchHits = [];
@@ -382,11 +362,8 @@
                 }
               }
             }
-
             if (touchHits.length === 1){
-              applyTransform(touchHits[0]);
-              gestureInitialDist = 0;
-              handledByTouch = true;
+              applyTransform(touchHits[0]); gestureInitialDist = 0; handled = true;
             } else if (touchHits.length >= 2){
               const p1 = touchHits[0], p2 = touchHits[1];
               const v = new THREE.Vector3().subVectors(p2, p1);
@@ -399,22 +376,17 @@
                 baseYaw = userYaw || 0;
               } else {
                 const f = dist / (gestureInitialDist||0.0001);
-                const newS = clampScale(baseScale * f);
-                model.scale.setScalar(newS);
-
-                const dAng = ang - gestureInitialYaw;
-                userYaw = baseYaw + dAng;
+                model.scale.setScalar(clampScale(baseScale * f));
+                userYaw = baseYaw + (ang - gestureInitialYaw);
                 model.rotation.set(0, userYaw, 0);
-
                 const mid = new THREE.Vector3().addVectors(p1, p2).multiplyScalar(0.5);
                 applyTransform(mid);
-                handledByTouch = true;
+                handled = true;
               }
             }
           }
 
-          // Kein Finger → zentrale Vorschau (wie Native Reticle, aber mit Footprint/Modell)
-          if (!handledByTouch && hitTestSource){
+          if (!handled && hitTestSource){
             const ht = frame.getHitTestResults(hitTestSource);
             if (ht.length){
               const pose = ht[0].getPose(refSpace);
@@ -428,7 +400,6 @@
           setStatus('Bewegen: Finger ziehen · Skalieren/Drehen: Pinch/Rotate · Tippen platziert');
         }
 
-        // Drop-Animation
         if (drop.active && model){
           const now = performance.now();
           const k = Math.min(1, (now - drop.t0)/drop.dur);
@@ -437,28 +408,22 @@
           const y = drop.yBase + drop.yLift*(1 - e);
           model.scale.setScalar(s);
           model.position.y = y;
-          if (k >= 1){
-            drop.active = false;
-            model.position.y = drop.yBase;
-          }
+          if (k >= 1){ drop.active = false; model.position.y = drop.yBase; }
         }
 
-        // Footprint-Fade
         if (fpFade.active && (footprint || footOutline)){
           const now = performance.now();
           const k = Math.min(1, (now - fpFade.t0)/fpFade.dur);
           const e = easeOutCubic(k);
           if (footprint){
-            const op = THREE.MathUtils.lerp(fpFade.op0, fpFade.op1, e);
-            footprint.material.opacity = op;
-            if (k >= 1){ footprint.visible = false; }
+            footprint.material.opacity = THREE.MathUtils.lerp(fpFade.op0, fpFade.op1, e);
+            if (k >= 1) footprint.visible = false;
           }
           if (footOutline){
-            const op2 = THREE.MathUtils.lerp(fpFade.line0, fpFade.line1, e);
-            footOutline.material.opacity = op2;
-            if (k >= 1){ footOutline.visible = false; }
+            footOutline.material.opacity = THREE.MathUtils.lerp(fpFade.line0, fpFade.line1, e);
+            if (k >= 1) footOutline.visible = false;
           }
-          if (k >= 1){ fpFade.active = false; }
+          if (k >= 1) fpFade.active = false;
         }
 
         if (mixer) mixer.update(dt);
@@ -468,11 +433,22 @@
       setStatus('Bewegen: Finger ziehen · Skalieren/Drehen: Pinch/Rotate · Tippen platziert');
     }
 
-    // UI
+    // ---------- UI ----------
+    $('#btn-start').addEventListener('click', async ()=>{
+      try{
+        $('#gate').hidden = true;           // liefert User Activation
+        await startXR();
+        $('#hud').hidden = false;
+      }catch(e){
+        $('#gate').hidden = false;          // zurück, damit man erneut versuchen kann
+        console.error(e);
+        setStatus('Fehler beim Start: ' + (e?.message||e), false);
+      }
+    });
+
     $('#btn-replace').onclick = ()=>{
       if (!model) return;
-      placed = false;
-      lastDragPos = null;
+      placed = false; lastDragPos = null;
       stopAndResetAnimation();
       if (footprint){ footprint.visible = true; footprint.material.opacity = 0.18; }
       if (footOutline){ footOutline.visible = true; footOutline.material.opacity = 0.7; }
@@ -487,18 +463,16 @@
       $('#btn-mute').classList.toggle('danger', muted);
     };
 
-    // Start
+    // ---------- Boot (ohne XR-Start – kein User-Gesture hier!) ----------
     (async function(){
       try{
         setStatus('Lade Szene…');
         cfg = await loadConfig();
         await loadModel();
-        await startXR();
-        $('#hud').hidden = false;
-        setStatus('Bewegen: Finger ziehen · Skalieren/Drehen: Pinch/Rotate · Tippen platziert');
+        setStatus('Bereit – AR starten');
       }catch(e){
         console.error(e);
-        alert('Fehler: ' + (e?.message||String(e)));
+        setStatus('Fehler: ' + (e?.message||String(e)));
       }
     })();
   </script>
