@@ -1,3 +1,14 @@
+<!--
+COPILOT RULES (nicht entfernen):
+- loadConfig: src (data:base64 | data:utf-8 | URL | URL-kodiertes JSON) + scene+base; __base setzen.
+- normalizeCfg: Poster-Fallback (target.previewUrl), audio.src→audio.url, audio.autoplay="withAnimation", animation.start="onPlace".
+- Poster erst ausblenden, wenn Hit-Test+Model ready.
+- XR dom-overlay + hit-test, robustes Error-Handling, iOS-Fallback (usdz).
+- select->place->startAnimation(+Audio bei autoplay=withAnimation).
+- Kein getVolume(); lokaler audioMuted Flag.
+- Play-/Pause-Button nur bei start in {onClick, manual}.
+- Diagnose-Overlay über Preflight (z-index 9999).
+-->
 <!doctype html>
 <html lang="de">
 <head>
@@ -49,7 +60,7 @@
     /* Bottom HUD (nur Android/WebXR) */
     #hud{position:absolute; left:0; right:0; bottom:calc(env(safe-area-inset-bottom)); padding:10px; display:flex; justify-content:center; pointer-events:auto}
     #hud .bar{display:flex; gap:8px; padding:8px; border:1px solid var(--border); border-radius:999px; background:color-mix(in srgb, var(--panel) 86%, transparent); box-shadow:0 10px 24px rgba(0,0,0,.35)}
-    .iconbtn{display:inline-flex; align-items:center; gap:8px; padding:10px 12px; border-radius:999px; border:1px solid var(--border); background:color-mix(in srgb, var(--panel) 92%, transparent); color:var(--text); font-weight:800; cursor:pointer}
+    .iconbtn{display:inline-flex; align-items:center; gap:8px; padding:10px 12px; border-radius:999px; border:1px solid var(--border); background:color-mix(in srgb, var(--panel) 92%, transparent); color:var(--text); cursor:pointer}
     .iconbtn[hidden]{display:none}
     .iconbtn:hover{border-color:var(--accent)}
     .iconbtn .ico{width:16px; height:16px; background:currentColor; -webkit-mask:var(--m) no-repeat center/contain; mask:var(--m) no-repeat center/contain}
@@ -59,7 +70,7 @@
     #status{position:absolute; top:12px; right:12px; pointer-events:none; background:color-mix(in srgb, var(--panel) 85%, transparent); border:1px solid var(--border); color:var(--muted); border-radius:12px; padding:6px 10px; font-size:12px}
 
     /* Tiny toast */
-    #toast{position:fixed; right:12px; bottom:12px; background:color-mix(in srgb, var(--panel) 92%, transparent); border:1px solid var(--border); border-radius:10px; padding:10px 12px; display:none; z-index:9999}
+    #toast{position:fixed; right:12px; bottom:12px; background:color-mix(in srgb, var(--panel) 92%, transparent); border:1px solid var(--border); border-radius:10px; padding:10px 12px; display:none; z-index:99999}
 
     /* Diagnose-Overlay (immer sichtbar über allem) */
     #diag{ position:fixed; inset:0; display:none; place-items:center; padding:20px; background:rgba(0,0,0,.45); backdrop-filter:blur(4px); pointer-events:auto; z-index:99999; }
@@ -119,17 +130,19 @@
     <div id="hud" hidden>
       <div class="bar">
         <button id="btn-place" class="iconbtn" title="Platzieren">
-          <span class="ico" style="--m:url('data:image/svg+xml,%3Csvg viewBox=%220 0 24 24%22 xmlns=%22http://www.w3.org/2000/svg%22%3E%3Cpath d=%22M12 2l7 4v6c0 5-7 10-7 10S5 17 5 12V6l7-4z%22 fill=%22%23fff%22/%3E%3C/svg%3E')"></span>Platzieren
+          <span class="ico" style="--m:url('data:image/svg+xml,%3Csvg viewBox=%220 0 24 24%22 xmlns=%22http://www.w3.org/2000/svg%22%3E%3Cpath d=%22M12 2l7 4v6c0 5-7 10-7 10S5 17 5 12V6l7-4z%22 fill=%22%23fff%22/%3E%3C/svg%3E')"></span>
+          Platzieren
         </button>
         <button id="btn-reset" class="iconbtn" title="Neu ausrichten">
-          <span class="ico" style="--m:url('data:image/svg+xml,%3Csvg viewBox=%220 0 24 24%22 xmlns=%22http://www.w3.org/2000/svg%22%3E%3Cpath d=%22M12 5V1L7 6l5 5V7c3.309 0 6 2.691 6 6a6 6 0 11-6-6z%22 fill=%22%23fff%22/%3E%3C/svg%3E')"></span>Reset
+          <span class="ico" style="--m:url('data:image/svg+xml,%3Csvg viewBox=%220 0 24 24%22 xmlns=%22http://www.w3.org/2000/svg%22%3E%3Cpath d=%22M12 5V1L7 6l5 5V7c3.309 0 6 2.691 6 6a6 6 0 11-6-6z%22 fill=%22%23fff%22/%3E%3C/svg%3E')"></span>
+          Neu ausrichten
         </button>
-        <button id="btn-rot-l" class="iconbtn" title="Drehen -15°"><span class="ico" style="--m:url('data:image/svg+xml,%3Csvg viewBox=%220 0 24 24%22 xmlns=%22http://www.w3.org/2000/svg%22%3E%3Cpath d=%22M12 2a10 10 0 1010 10h-2a8 8 0 11-8-8V2zM11 6v6l5 3%22 stroke=%22%23fff%22 stroke-width=%222%22 fill=%22none%22/%3E%3C/svg%3E')"></span></button>
-        <button id="btn-rot-r" class="iconbtn" title="Drehen +15°"><span class="ico" style="--m:url('data:image/svg+xml,%3Csvg viewBox=%220 0 24 24%22 xmlns=%22http://www.w3.org/2000/svg%22%3E%3Cpath d=%22M12 2a10 10 0 1010 10h-2a8 8 0 11-8-8V2zM13 6v6l-5 3%22 stroke=%22%23fff%22 stroke-width=%222%22 fill=%22none%22/%3E%3C/svg%3E')"></span></button>
-        <button id="btn-scale-dn" class="iconbtn" title="Kleiner"><span class="ico" style="--m:url('data:image/svg+xml,%3Csvg viewBox=%220 0 24 24%22 xmlns=%22http://www.w3.org/2000/svg%22%3E%3Cpath d=%22M5 12h14%22 stroke=%22%23fff%22 stroke-width=%222%22/%3E%3C/svg%3E')"></span></button>
-        <button id="btn-scale-up" class="iconbtn" title="Größer"><span class="ico" style="--m:url('data:image/svg+xml,%3Csvg viewBox=%220 0 24 24%22 xmlns=%22http://www.w3.org/2000/svg%22%3E%3Cpath d=%22M12 5v14M5 12h14%22 stroke=%22%23fff%22 stroke-width=%222%22/%3E%3C/svg%3E')"></span></button>
-        <button id="btn-play" class="iconbtn" title="Play/Pause" hidden><span class="ico" style="--m:url('data:image/svg+xml,%3Csvg viewBox=%220 0 24 24%22 xmlns=%22http://www.w3.org/2000/svg%22%3E%3Cpath d=%22M8 5v14l11-7z%22 fill=%22%23fff%22/%3E%3C/svg%3E')"></span></button>
-        <button id="btn-mute" class="iconbtn" title="Mute" hidden><span class="ico" style="--m:url('data:image/svg+xml,%3Csvg viewBox=%220 0 24 24%22 xmlns=%22http://www.w3.org/2000/svg%22%3E%3Cpath d=%22M3 9v6h4l5 5V4L7 9H3z%22 fill=%22%23fff%22/%3E%3C/svg%3E')"></span></button>
+        <button id="btn-rot-l" class="iconbtn" title="Drehen -15°"><span class="ico" style="--m:url('data:image/svg+xml,%3Csvg viewBox=%220 0 24 24%22 xmlns=%22http://www.w3.org/2000/svg%22%3E%3Cpath d=%22M7 12l7-7v4h3v6h-3v4z%22 fill=%22%23fff%22/%3E%3C/svg%3E')"></span>-15°</button>
+        <button id="btn-rot-r" class="iconbtn" title="Drehen +15°"><span class="ico" style="--m:url('data:image/svg+xml,%3Csvg viewBox=%220 0 24 24%22 xmlns=%22http://www.w3.org/2000/svg%22%3E%3Cpath d=%22M17 12l-7 7v-4H7V9h3V5z%22 fill=%22%23fff%22/%3E%3C/svg%3E')"></span>+15°</button>
+        <button id="btn-scale-dn" class="iconbtn" title="Kleiner"><span class="ico" style="--m:url('data:image/svg+xml,%3Csvg viewBox=%220 0 24 24%22 xmlns=%22http://www.w3.org/2000/svg%22%3E%3Cpath d=%22M5 11h14v2H5z%22 fill=%22%23fff%22/%3E%3C/svg%3E')"></span>Kleiner</button>
+        <button id="btn-scale-up" class="iconbtn" title="Größer"><span class="ico" style="--m:url('data:image/svg+xml,%3Csvg viewBox=%220 0 24 24%22 xmlns=%22http://www.w3.org/2000/svg%22%3E%3Cpath d=%22M5 11h6V5h2v6h6v2h-6v6h-2v-6H5z%22 fill=%22%23fff%22/%3E%3C/svg%3E')"></span>Größer</button>
+        <button id="btn-play" class="iconbtn" title="Play/Pause" hidden><span class="ico" style="--m:url('data:image/svg+xml,%3Csvg viewBox=%220 0 24 24%22 xmlns=%22http://www.w3.org/2000/svg%22%3E%3Cg fill=%22%23fff%22%3E%3Cpath d=%22M8 5h3v14H8zM13 5h3v14h-3z%22/%3E%3C/g%3E%3C/svg%3E')"></span>Play/Pause</button>
+        <button id="btn-mute" class="iconbtn" title="Mute" hidden><span class="ico" style="--m:url('data:image/svg+xml,%3Csvg viewBox=%220 0 24 24%22 xmlns=%22http://www.w3.org/2000/svg%22%3E%3Cpath d=%22M3 9v6h4l5 5V4L7 9H3zm13.5 3a4.5 4.5 0 00-3.91-4.45v8.9A4.5 4.5 0 0016.5 12z%22 fill=%22%23fff%22/%3E%3C/svg%3E')"></span>Mute</button>
       </div>
     </div>
 
@@ -226,6 +239,7 @@
       cfg.model = cfg.model || {};
       cfg.audio = cfg.audio || {};
       cfg.meta  = cfg.meta  || {};
+      cfg.animation = cfg.animation || {};
 
       // Poster-Fallback
       if (!cfg.ui.welcome.poster && cfg.target?.previewUrl) {
@@ -237,7 +251,6 @@
       if (cfg.audio.autoplay == null) cfg.audio.autoplay = 'withAnimation';
 
       // Animation: model.animation → cfg.animation.clipName/Start/Loop
-      cfg.animation = cfg.animation || {};
       if (cfg.animation.clipName == null && cfg.model.animation != null) {
         const a = cfg.model.animation;
         if (a === 'none'){ cfg.animation.clipName = null; cfg.animation.start='none'; cfg.animation.loop=false; }
@@ -290,8 +303,9 @@
     scene.add(frame);
 
     // Model state
-    let model = null;            // THREE.Group
-    let previewModel = null;     // halbtransparent bis zur Platzierung
+    let model = null;            // THREE.Group (echtes Modell, sichtbar nach Platzierung)
+    let modelRoot = null;        // GLTF root (für AnimationMixer)
+    let previewModel = null;     // halbtransparentes Ghost bis zur Platzierung/Neuplatzierung
     let mixer = null;            // AnimationMixer
     let audio = null;            // THREE.Audio
     let audioMuted = false;
@@ -302,21 +316,30 @@
     const draco = new DRACOLoader(); draco.setDecoderPath('https://www.gstatic.com/draco/v1/decoders/');
     loader.setDRACOLoader(draco);
 
+    // Raycaster für Tap auf das Modell (zum Pausieren/Re-Positionieren)
+    const raycaster = new THREE.Raycaster();
+    const tmpMat = new THREE.Matrix4();
+    const tmpOrigin = new THREE.Vector3();
+    const tmpDir = new THREE.Vector3();
+
     // Animation helpers
     function startAnimation(cfg){
-      if (!mixer || !model) return;
-      const clips = model.animations || [];
-      if (!clips.length) return;
+      if (!mixer || !model || !model.animations || !model.animations.length) return;
 
+      const clips = model.animations;
       let clip = null;
       const want = cfg.animation?.clipName;
-      if (want && want !== '*' && want !== 'none'){
+
+      if (want === 'none' || want === null) return;
+      if (want && want !== '*'){
         clip = clips.find(c=>c.name===want) || clips[0];
-      } else if (want === 'none') {
-        return;
       } else {
         clip = clips[0];
       }
+
+      if (!clip) return;
+
+      mixer.stopAllAction();
       const act = mixer.clipAction(clip);
       const loop = cfg.animation?.loop !== false;
       act.setLoop(loop ? THREE.LoopRepeat : THREE.LoopOnce, loop ? (cfg.animation?.iterations||9999) : 0);
@@ -324,13 +347,77 @@
       act.reset().play();
       mixer.timeScale = 1;
 
-      if (cfg.audio?.autoplay === 'withAnimation' && audio && audio.buffer && !audio.isPlaying) {
+      if (cfg.audio?.autoplay === 'withAnimation' && audio && audio.buffer){
         try { audio.play(); } catch(_) {}
+      }
+    }
+
+    function pauseAnimationAndAudio(){
+      if (mixer) mixer.timeScale = 0;
+      if (audio && audio.isPlaying){
+        try { audio.stop(); } catch(_){}
       }
     }
 
     // AR session / hit-test
     let xrSession = null, refSpace = null, viewerSpace = null, hitTestSource = null;
+
+    function hidePreflight(){
+      const pf = $('#preflight');
+      if (!pf || document.body.__preflightGone) return;
+      pf.style.transition = 'opacity .35s ease';
+      pf.style.opacity = '0';
+      setTimeout(()=>{ pf.hidden = true; document.body.__preflightGone = true; }, 360);
+      $('#hud').hidden = false;
+      $('#status').textContent = 'Tippe, um zu platzieren';
+    }
+
+    function getInputRayFromEvent(ev){
+      try{
+        const pose = ev.frame.getPose(ev.inputSource.targetRaySpace, refSpace);
+        if (!pose || !pose.transform) return null;
+        tmpMat.fromArray(pose.transform.matrix);
+        tmpOrigin.setFromMatrixPosition(tmpMat);
+        // -Z Richtung der Ray-Pose
+        const rotOnly = new THREE.Matrix4().extractRotation(tmpMat);
+        tmpDir.set(0, 0, -1).applyMatrix4(rotOnly).normalize();
+        return { origin: tmpOrigin.clone(), direction: tmpDir.clone() };
+      }catch(_){ return null; }
+    }
+
+    function tapHitsModel(ev){
+      if (!model) return false;
+      const ray = getInputRayFromEvent(ev);
+      if (!ray) return false;
+      raycaster.set(ray.origin, ray.direction);
+      const hits = raycaster.intersectObject(model, true);
+      return hits && hits.length > 0;
+    }
+
+    function placeAtReticle(cfg){
+      const m = new THREE.Matrix4(); m.copy(reticle.matrix);
+      model.matrix.copy(m);
+      model.matrix.decompose(model.position, model.quaternion, model.scale);
+      placed = true;
+      model.visible = true;
+      previewModel.visible = false;
+      frame.visible = false;
+      $('#btn-place').textContent='Neu platzieren';
+      if (cfg.animation?.start === 'onPlace') startAnimation(cfg);
+    }
+
+    function enterAdjustMode(){
+      pauseAnimationAndAudio();
+      placed = false;
+      // Ghost auf aktuelle Pose setzen
+      previewModel.visible = true;
+      frame.visible = true;
+      previewModel.position.copy(model.position);
+      previewModel.quaternion.copy(model.quaternion);
+      previewModel.scale.copy(model.scale);
+      $('#btn-place').textContent='Platzieren';
+      $('#status').textContent='Tippe, um neu zu platzieren';
+    }
 
     async function startXR(cfg){
       if (!navigator.xr) throw new Error('WebXR wird in diesem Browser nicht unterstützt.');
@@ -355,14 +442,24 @@
       viewerSpace = await sess.requestReferenceSpace('viewer');
       hitTestSource = await sess.requestHitTestSource({ space: viewerSpace });
 
-      // Tap = platzieren
-      sess.addEventListener('select', ()=>{
-        if (!reticle.visible || !previewModel) return;
-        const m = new THREE.Matrix4(); m.copy(reticle.matrix);
-        model.matrix.copy(m); model.matrix.decompose(model.position, model.quaternion, model.scale);
-        placed = true; previewModel.visible = false; frame.visible = false;
-        $('#btn-place').textContent='Neu platzieren';
-        if (cfg.animation?.start === 'onPlace') startAnimation(cfg);
+      // Tap = platzieren oder ggf. Modell-Auswahl zum Re-Positionieren
+      sess.addEventListener('select', (ev)=>{
+        if (!reticle.visible || !model) return;
+
+        if (!placed){
+          placeAtReticle(cfg);
+          if (cfg.audio?.autoplay === 'withAnimation' && audio && audio.buffer && mixer && mixer.timeScale !== 0){
+            try { audio.play(); } catch(_){}
+          }
+        } else {
+          // Wenn auf das Modell getippt wurde: in Adjust-Mode wechseln (Pause + Ghost + Rahmen)
+          if (tapHitsModel(ev)){
+            enterAdjustMode();
+          } else if (previewModel.visible){
+            // Falls aus irgendeinem Grund ein Ghost sichtbar ist und auf Boden getippt wird -> platzieren
+            placeAtReticle(cfg);
+          }
+        }
       });
 
       // Render loop
@@ -398,16 +495,6 @@
       });
     }
 
-    function hidePreflight(){
-      const pf = $('#preflight');
-      if (!pf || document.body.__preflightGone) return;
-      pf.style.transition = 'opacity .35s ease';
-      pf.style.opacity = '0';
-      setTimeout(()=>{ pf.hidden = true; document.body.__preflightGone = true; }, 360);
-      $('#hud').hidden = false;
-      $('#status').textContent = 'Tippe, um zu platzieren';
-    }
-
     // Load model + optional audio
     async function loadModel(cfg){
       const glbUrl = resolveUrl(cfg.model?.url||'scene.glb', cfg);
@@ -416,8 +503,10 @@
 
       // Basis-Group
       model = new THREE.Group(); model.name = 'ModelRoot'; model.add(root);
+      modelRoot = root;
       model.traverse(n=>{ if (n.material){ n.material.transparent = (n.material.transparent||false); } });
-      model.visible = true; scene.add(model);
+      model.visible = false; // erst nach Platzierung sichtbar
+      scene.add(model);
 
       // Ghost
       previewModel = model.clone(true);
@@ -437,7 +526,7 @@
       // Animations
       if (gltf.animations?.length){
         model.animations = gltf.animations;
-        mixer = new THREE.AnimationMixer(root);
+        mixer = new THREE.AnimationMixer(modelRoot);
         const wantsOnClick = (cfg.animation?.start === 'onClick' || cfg.animation?.start === 'manual');
         $('#btn-play').hidden = !wantsOnClick;
       } else {
@@ -473,16 +562,16 @@
     $('#btn-scale-dn').onclick = ()=> setScale(1/1.1);
     $('#btn-rot-l').onclick = ()=> rotateY(-15);
     $('#btn-rot-r').onclick = ()=> rotateY(+15);
-    $('#btn-reset').onclick = ()=>{ placed=false; previewModel.visible=true; frame.visible=true; $('#btn-place').textContent='Platzieren'; };
+    $('#btn-reset').onclick = ()=>{ placed=false; previewModel.visible=true; frame.visible=true; $('#btn-place').textContent='Platzieren'; $('#status').textContent='Tippe, um neu zu platzieren'; };
     $('#btn-place').onclick = ()=>{
       if (!placed){ toast('Tippe ins AR-Bild, um zu platzieren'); }
-      else { placed=false; previewModel.visible=true; frame.visible=true; $('#btn-place').textContent='Platzieren'; }
+      else { enterAdjustMode(); }
     };
     $('#btn-play').onclick = ()=>{
       if (!mixer || !model?.animations?.length) return;
       const ts = mixer.timeScale ?? 1;
-      if (ts === 0){ mixer.timeScale = 1; if (audio && audio.buffer && !audio.isPlaying) audio.play(); }
-      else { mixer.timeScale = 0; if (audio?.isPlaying) audio.pause?.(); }
+      if (ts === 0){ mixer.timeScale = 1; if (audio && audio.buffer && !audio.isPlaying) try{ audio.play(); }catch(_){} }
+      else { mixer.timeScale = 0; if (audio?.isPlaying) { try{ audio.stop(); }catch(_){} } }
     };
     $('#btn-mute').onclick = ()=>{
       if (!audio) return;
