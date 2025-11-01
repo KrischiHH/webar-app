@@ -72,7 +72,7 @@ COPILOT RULES (nicht entfernen):
     /* Tiny toast */
     #toast{position:fixed; right:12px; bottom:12px; background:color-mix(in srgb, var(--panel) 92%, transparent); border:1px solid var(--border); border-radius:10px; padding:10px 12px; display:none; z-index:99999}
 
-    /* Diagnose-Overlay (immer sichtbar über allem) */
+    /* Diagnose-Overlay (über allem) */
     #diag{ position:fixed; inset:0; display:none; place-items:center; padding:20px; background:rgba(0,0,0,.45); backdrop-filter:blur(4px); pointer-events:auto; z-index:99999; }
     #diagCard{ max-width:min(720px,92vw); border:1px solid var(--border); border-radius:14px; background:color-mix(in srgb, var(--panel) 90%, transparent); padding:14px; }
     #diag h3{margin:0 0 6px 0}
@@ -456,7 +456,7 @@ COPILOT RULES (nicht entfernen):
           if (tapHitsModel(ev)){
             enterAdjustMode();
           } else if (previewModel.visible){
-            // Falls aus irgendeinem Grund ein Ghost sichtbar ist und auf Boden getippt wird -> platzieren
+            // Falls Ghost sichtbar ist und auf Boden getippt wird -> platzieren
             placeAtReticle(cfg);
           }
         }
@@ -562,7 +562,7 @@ COPILOT RULES (nicht entfernen):
     $('#btn-scale-dn').onclick = ()=> setScale(1/1.1);
     $('#btn-rot-l').onclick = ()=> rotateY(-15);
     $('#btn-rot-r').onclick = ()=> rotateY(+15);
-    $('#btn-reset').onclick = ()=>{ placed=false; previewModel.visible=true; frame.visible=true; $('#btn-place').textContent='Platzieren'; $('#status').textContent='Tippe, um neu zu platzieren'; };
+    $('#btn-reset').onclick = ()=>{ enterAdjustMode(); };
     $('#btn-place').onclick = ()=>{
       if (!placed){ toast('Tippe ins AR-Bild, um zu platzieren'); }
       else { enterAdjustMode(); }
@@ -607,52 +607,66 @@ COPILOT RULES (nicht entfernen):
       $('#desc').textContent    = cfg.ui.welcome.desc;
       $('#poster').src          = resolveUrl(cfg.ui.welcome.poster || 'poster.jpg', cfg);
 
-      // Native-CTA Logik
+      // Optional: Native-CTA (nur zeigen, wenn WebXR nicht unterstützt)
       const nativeUrl = buildNativeLink(cfg);
       const openNative = $('#btn-open-native');
-      openNative.onclick = ()=>{ location.href = nativeUrl; };
-
-      // iOS – WebXR nicht verfügbar -> zeige Native Button sofort, wenn USDZ vorhanden
-      if (isIOS){
-        if (cfg.model?.usdzUrl){ openNative.hidden = false; }
-      }
 
       // Assets laden
       await loadModel(cfg);
       $('#status').textContent = 'Bereit – tippe OK';
 
+      // WebXR-Fähigkeit probeweise ermitteln (asynchron, vor OK-Click)
+      let canWebXR = false;
+      try {
+        canWebXR = !!(navigator.xr) && await navigator.xr.isSessionSupported('immersive-ar');
+      } catch (_) { canWebXR = false; }
+
+      // Auf iOS Native-Button nur anzeigen, wenn WebXR fehlt und USDZ existiert
+      if (isIOS && !canWebXR && cfg.model?.usdzUrl){
+        openNative.hidden = false;
+        openNative.onclick = ()=>{ location.href = nativeUrl; };
+      }
+
       // Start
       $('#btn-start').onclick = async ()=>{
         try{
-          if (isIOS){
-            // iOS: Quick Look
-            if (cfg.model?.usdzUrl){
-              location.href = nativeUrl;
-            } else {
-              showDiag(
-                'AR auf iOS nur nativ',
-                'Diese Experience benötigt eine USDZ-Datei für iOS Quick Look. Bitte lade die Szene mit USDZ neu oder öffne auf Android (WebXR).',
-                null
-              );
-            }
+          // Wenn WebXR geht → immer WebXR starten (auch auf iOS, falls irgendwann verfügbar)
+          const canXRNow = !!(navigator.xr) && await (navigator.xr.isSessionSupported('immersive-ar'));
+          if (canXRNow){
+            await startXR(cfg);
+            // Preflight blendet aus, sobald Reticle sichtbar + Model geladen
             return;
           }
-          await startXR(cfg); // Android/WebXR
-          // Preflight blendet aus, sobald Reticle sichtbar + Model geladen
+
+          // WebXR nicht verfügbar → iOS Quick Look (falls USDZ), sonst Diagnose
+          if (isIOS && cfg.model?.usdzUrl){
+            location.href = nativeUrl;
+            return;
+          }
+
+          showDiag(
+            'AR konnte nicht gestartet werden',
+            'WebXR wird auf diesem Gerät/Browser nicht unterstützt.\n\nTipps:\n• In Chrome/Edge öffnen (kein In-App-Browser)\n• Kamera erlauben\n• Android: „Google Play-Dienste für AR“ aktualisieren',
+            isIOS ? nativeUrl : null
+          );
+          if (isIOS || cfg.model?.usdzUrl) openNative.hidden = false;
+
         }catch(e){
           const msg = (e?.message||String(e));
           showDiag(
             'AR konnte nicht gestartet werden',
             msg + '\n\nTipps:\n• In Chrome/Edge öffnen (kein In-App-Browser)\n• Kamera erlauben\n• Android: „Google Play-Dienste für AR“ aktualisieren',
-            nativeUrl
+            isIOS ? nativeUrl : null
           );
           openNative.hidden = false;
         }
       };
 
-      // Falls WebXR objektiv fehlt (älterer Browser)
-      if (!navigator.xr && !isIOS){
+      // Falls WebXR objektiv fehlt (älterer Browser auf Android), biete Native-Link an (falls sinnvoll)
+      if (!navigator.xr && !isIOS && cfg.model?.url){
+        // Hier typischerweise Android ohne ARCore → Scene Viewer Intent hilft
         openNative.hidden = false;
+        openNative.onclick = ()=>{ location.href = nativeUrl; };
       }
     })().catch(err=>{
       console.error(err);
